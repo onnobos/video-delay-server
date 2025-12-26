@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual Environment
+venv/
+env/
+myenv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# NDI / Build (if compiling cyndilib locally)
+build/
+dist/
+*.so
+*.dylib
+
+# Video Server Specific
+recordings/
+thumbnails/
+logs/
+*.log
+*.mp4
+*.jpg
+
+# macOS LaunchAgent (deployment)
+*.plist

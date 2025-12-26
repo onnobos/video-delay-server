@@ -1,0 +1,5 @@
+opencv-python
+cyndilib
+fastapi
+uvicorn
+pydantic

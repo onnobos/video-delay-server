@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Delay Server Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        h1 {
+            color: #667eea;
+            margin-bottom: 8px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .status-item {
+            background: #f7f7f7;
+            padding: 16px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .status-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .status-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .status-value.active {
+            color: #10b981;
+        }
+
+        .status-value.inactive {
+            color: #ef4444;
+        }
+
+        .status-value.paused {
+            color: #f59e0b;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn-primary {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #059669;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-warning {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #4b5563;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .settings-group {
+            margin-bottom: 20px;
+        }
+
+        .settings-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .settings-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+
+        .settings-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        .alert-success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .alert-warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            background: #10b981;
+            color: white;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+        }
+
+        .connection-status.disconnected {
+            background: #ef4444;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .snapshot-container {
+            margin-top: 16px;
+            text-align: center;
+        }
+
+        .snapshot-image {
+            width: 100%;
+            max-width: 100%;
+            border-radius: 8px;
+            margin-top: 16px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .snapshot-placeholder {
+            background: #f7f7f7;
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 40px;
+            margin-top: 16px;
+            color: #999;
+            font-size: 14px;
+        }
+
+        @media (max-width: 480px) {
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-status" id="connectionStatus">● Connected</div>
+    <div class="container">
+        <div class="card">
+            <h1>🎥 Video Delay Server</h1>
+            <p class="subtitle">Remote Control Panel</p>
+
+            <div id="alert" class="alert hidden"></div>
+
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="status-label">Server</div>
+                    <div class="status-value" id="serverStatus">Loading...</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Streaming</div>
+                    <div class="status-value" id="streamingStatus">Loading...</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Recording</div>
+                    <div class="status-value" id="recordingStatus">Loading...</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Delay</div>
+                    <div class="status-value" id="delayStatus">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 16px; font-size: 20px;">Stream Controls</h2>
+            <button class="btn btn-primary" id="btnStartStream">▶️ Start Streaming</button>
+            <button class="btn btn-danger" id="btnStopStream">⏹️ Stop Streaming</button>
+            <button class="btn btn-warning" id="btnPauseStream">⏸️ Pause</button>
+            <button class="btn btn-warning" id="btnResumeStream">▶️ Resume</button>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 16px; font-size: 20px;">📸 Snapshot</h2>
+            <p style="color: #666; margin-bottom: 16px;">Capture the current frame from the camera.</p>
+            <button class="btn btn-secondary" id="btnSnapshot">📸 Take Snapshot</button>
+            <div class="snapshot-container">
+                <div id="snapshotPlaceholder" class="snapshot-placeholder">
+                    Click "Take Snapshot" to capture the current frame
+                </div>
+                <img id="snapshotImage" class="snapshot-image hidden" alt="Snapshot">
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 16px; font-size: 20px;">Settings</h2>
+            
+            <div class="settings-group">
+                <label for="delaySeconds">Delay (seconds)</label>
+                <input type="number" id="delaySeconds" min="1" max="60" value="10">
+            </div>
+
+            <div class="settings-group">
+                <label for="sourceName">NDI Source Name</label>
+                <input type="text" id="sourceName" value="Volleyball-Delay-Cam">
+            </div>
+
+            <div class="settings-group">
+                <label for="fps">Frame Rate (FPS)</label>
+                <input type="number" id="fps" min="15" max="60" value="30">
+            </div>
+
+            <button class="btn btn-secondary" id="btnApplySettings">💾 Apply & Restart</button>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 16px; font-size: 20px;">📹 Recorded Videos</h2>
+            <p style="color: #666; margin-bottom: 16px;">View and download your recorded videos.</p>
+            <a href="/static/gallery.html" class="btn btn-primary" style="display: inline-block; text-decoration: none;">
+                View Video Gallery →
+            </a>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let autoRefreshInterval = null;
+        let isConnected = true;
+        let retryCount = 0;
+        const MAX_RETRY_DELAY = 10000; // Max 10 seconds between retries
+
+        function updateConnectionStatus(connected) {
+            const statusEl = document.getElementById('connectionStatus');
+            if (connected && !isConnected) {
+                // Reconnected
+                statusEl.textContent = '● Connected';
+                statusEl.className = 'connection-status';
+                showAlert('Connection restored', 'success');
+                retryCount = 0;
+                startAutoRefresh();
+            } else if (!connected && isConnected) {
+                // Disconnected
+                statusEl.textContent = '● Disconnected';
+                statusEl.className = 'connection-status disconnected';
+                showAlert('Lost connection to server. Retrying...', 'warning');
+                stopAutoRefresh();
+                
+                // Update UI to show disconnected state
+                document.getElementById('serverStatus').textContent = 'Unable to Connect';
+                document.getElementById('serverStatus').className = 'status-value inactive';
+                document.getElementById('streamingStatus').textContent = 'Unknown';
+                document.getElementById('streamingStatus').className = 'status-value inactive';
+                document.getElementById('recordingStatus').textContent = 'Unknown';
+                document.getElementById('recordingStatus').className = 'status-value inactive';
+                document.getElementById('delayStatus').textContent = '--';
+                
+                // Disable all control buttons
+                document.getElementById('btnStartStream').disabled = true;
+                document.getElementById('btnStopStream').disabled = true;
+                document.getElementById('btnPauseStream').disabled = true;
+                document.getElementById('btnResumeStream').disabled = true;
+                document.getElementById('btnApplySettings').disabled = true;
+            }
+            isConnected = connected;
+        }
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/status`);
+                if (!response.ok) throw new Error('Server error');
+                const data = await response.json();
+                updateUI(data);
+                updateConnectionStatus(true);
+                retryCount = 0;
+            } catch (error) {
+                updateConnectionStatus(false);
+                retryCount++;
+                // Exponential backoff for retries
+                const retryDelay = Math.min(1000 * Math.pow(2, retryCount), MAX_RETRY_DELAY);
+                setTimeout(fetchStatus, retryDelay);
+            }
+        }
+
+        function startAutoRefresh() {
+            if (autoRefreshInterval) return; // Already running
+            autoRefreshInterval = setInterval(fetchStatus, 2000);
+        }
+
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        }
+
+        function updateUI(status) {
+            document.getElementById('serverStatus').textContent = status.process_running ? 'Running' : 'Stopped';
+            document.getElementById('serverStatus').className = 'status-value ' + (status.process_running ? 'active' : 'inactive');
+
+            document.getElementById('streamingStatus').textContent = status.streaming ? 'Active' : 'Inactive';
+            document.getElementById('streamingStatus').className = 'status-value ' + (status.streaming ? 'active' : 'inactive');
+
+            document.getElementById('recordingStatus').textContent = status.recording ? 'Recording' : 'Not Recording';
+            document.getElementById('recordingStatus').className = 'status-value ' + (status.recording ? 'active' : 'inactive');
+
+            if (status.paused) {
+                document.getElementById('streamingStatus').textContent = 'Paused';
+                document.getElementById('streamingStatus').className = 'status-value paused';
+            }
+
+            document.getElementById('delayStatus').textContent = `${status.settings.delay_seconds}s`;
+
+            // Only update form fields if they're not currently focused (being edited)
+            const delayInput = document.getElementById('delaySeconds');
+            const sourceInput = document.getElementById('sourceName');
+            const fpsInput = document.getElementById('fps');
+
+            if (document.activeElement !== delayInput) {
+                delayInput.value = status.settings.delay_seconds;
+            }
+            if (document.activeElement !== sourceInput) {
+                sourceInput.value = status.settings.source_name;
+            }
+            if (document.activeElement !== fpsInput) {
+                fpsInput.value = status.settings.fps;
+            }
+
+            // Update button states
+            const streaming = status.streaming;
+            const paused = status.paused;
+            
+            document.getElementById('btnStartStream').disabled = streaming;
+            document.getElementById('btnStopStream').disabled = !streaming;
+            document.getElementById('btnPauseStream').disabled = !streaming || paused;
+            document.getElementById('btnResumeStream').disabled = !streaming || !paused;
+        }
+
+        function showAlert(message, type = 'success') {
+            const alert = document.getElementById('alert');
+            alert.textContent = message;
+            alert.className = `alert alert-${type}`;
+            setTimeout(() => {
+                alert.className = 'alert hidden';
+            }, 3000);
+        }
+
+        async function apiCall(endpoint, method = 'POST', body = null) {
+            if (!isConnected) {
+                showAlert('Server is disconnected. Please wait...', 'error');
+                return;
+            }
+
+            try {
+                const options = {
+                    method,
+                    headers: body ? { 'Content-Type': 'application/json' } : {}
+                };
+                if (body) options.body = JSON.stringify(body);
+
+                const response = await fetch(`${API_BASE}${endpoint}`, options);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showAlert(data.message || 'Success', 'success');
+                    fetchStatus();
+                } else {
+                    showAlert(data.detail || 'Error occurred', 'error');
+                }
+            } catch (error) {
+                updateConnectionStatus(false);
+                showAlert('Network error', 'error');
+            }
+        }
+
+        document.getElementById('btnStartStream').addEventListener('click', () => {
+            apiCall('/stream/start');
+        });
+
+        document.getElementById('btnStopStream').addEventListener('click', () => {
+            apiCall('/stream/stop');
+        });
+
+        document.getElementById('btnPauseStream').addEventListener('click', () => {
+            apiCall('/stream/pause');
+        });
+
+        document.getElementById('btnResumeStream').addEventListener('click', () => {
+            apiCall('/stream/resume');
+        });
+
+        document.getElementById('btnApplySettings').addEventListener('click', () => {
+            const settings = {
+                delay_seconds: parseInt(document.getElementById('delaySeconds').value),
+                source_name: document.getElementById('sourceName').value,
+                fps: parseInt(document.getElementById('fps').value),
+                width: 1280,
+                height: 720,
+                cam_index_primary: 0,
+                cam_index_secondary: 1
+            };
+            apiCall('/server/restart', 'POST', settings);
+        });
+
+        document.getElementById('btnSnapshot').addEventListener('click', async () => {
+            if (!isConnected) {
+                showAlert('Server is disconnected. Please wait...', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/snapshot`);
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const imageUrl = URL.createObjectURL(blob);
+                    
+                    // Show image, hide placeholder
+                    const snapshotImage = document.getElementById('snapshotImage');
+                    const snapshotPlaceholder = document.getElementById('snapshotPlaceholder');
+                    
+                    snapshotImage.src = imageUrl;
+                    snapshotImage.classList.remove('hidden');
+                    snapshotPlaceholder.classList.add('hidden');
+                    
+                    showAlert('Snapshot captured successfully!', 'success');
+                } else {
+                    const data = await response.json();
+                    showAlert(data.detail || 'Failed to capture snapshot', 'error');
+                }
+            } catch (error) {
+                updateConnectionStatus(false);
+                showAlert('Network error while capturing snapshot', 'error');
+            }
+        });
+
+        // Initial fetch and start auto-refresh
+        fetchStatus();
+        startAutoRefresh();
+    </script>
+</body>
+</html>
