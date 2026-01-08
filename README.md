@@ -1,12 +1,12 @@
 # Video Server (NDI Delay Stream)
 
-A professional Python application that captures video from a webcam, buffers it for a configurable delay (default 10 seconds), and streams it out via NDI (Network Device Interface). Features include automatic recording, thumbnail generation, web-based remote control, and comprehensive logging.
+A professional Python application that captures video from a webcam, buffers it for a configurable delay (default 5 seconds), and streams it out via NDI (Network Device Interface). Features include automatic recording, thumbnail generation, web-based remote control, snapshot capture, and comprehensive logging.
 
 ## Features
 
 ### Core Functionality
 - **Video Capture**: Supports generic USB webcams and macOS Continuity Camera
-- **Configurable Delay Buffer**: Creates a "live replay" effect (default 10 seconds)
+- **Configurable Delay Buffer**: Creates a "live replay" effect (default 5 seconds)
 - **NDI Output**: Broadcasts as an NDI source for professional video workflows
 - **Timestamp Overlay**: Shows capture time (HH:MM:SS) on each frame to demonstrate delay
 - **Automatic Recording**: Records streams to MP4 files with timestamp-based filenames
@@ -14,6 +14,7 @@ A professional Python application that captures video from a webcam, buffers it 
 
 ### Control & Management
 - **Web Control Panel**: Mobile-friendly interface for remote control
+- **Snapshot Capture**: Take single-frame snapshots from the live camera feed
 - **Video Gallery**: Browse and download recorded videos with thumbnails
 - **REST API**: Full programmatic control via HTTP endpoints
 - **Headless Mode**: Runs as a background service without GUI
@@ -145,6 +146,7 @@ The mobile-friendly control panel provides:
 ### Stream Controls
 - **Start/Stop Streaming**: Begin or end NDI transmission
 - **Pause/Resume**: Temporarily pause without stopping
+- **Snapshot Capture**: Take and view single-frame snapshots from the camera
 - **Connection Status**: Real-time server connectivity indicator
 
 ### Settings Management
@@ -179,6 +181,7 @@ Separate page showing all recordings:
 - `POST /stream/stop` - Stop streaming and recording
 - `POST /stream/pause` - Pause transmission
 - `POST /stream/resume` - Resume transmission
+- `GET /snapshot` - Capture and return current frame as JPEG image
 
 ### Example API Usage
 
@@ -200,13 +203,16 @@ curl -X POST http://localhost:8000/server/restart \
 
 # List recordings
 curl http://localhost:8000/videos
+
+# Capture snapshot
+curl http://localhost:8000/snapshot --output snapshot.jpg
 ```
 
 ## Configuration
 
 ### Default Settings (src/config.py)
 ```python
-DELAY_SECONDS = 10
+DELAY_SECONDS = 5
 FPS = 30
 WIDTH = 1280
 HEIGHT = 720

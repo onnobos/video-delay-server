@@ -323,11 +323,12 @@
     </div>
 
     <script>
-        const API_BASE = window.location.origin;
-        let autoRefreshInterval = null;
-        let isConnected = true;
-        let retryCount = 0;
-        const MAX_RETRY_DELAY = 10000; // Max 10 seconds between retries
+        'use strict';
+        var API_BASE = window.location.origin;
+        var autoRefreshInterval = null;
+        var isConnected = true;
+        var retryCount = 0;
+        var MAX_RETRY_DELAY = 10000; // Max 10 seconds between retries
 
         function updateConnectionStatus(connected) {
             const statusEl = document.getElementById('connectionStatus');
@@ -364,21 +365,23 @@
             isConnected = connected;
         }
 
-        async function fetchStatus() {
-            try {
-                const response = await fetch(`${API_BASE}/status`);
-                if (!response.ok) throw new Error('Server error');
-                const data = await response.json();
-                updateUI(data);
-                updateConnectionStatus(true);
-                retryCount = 0;
-            } catch (error) {
-                updateConnectionStatus(false);
-                retryCount++;
-                // Exponential backoff for retries
-                const retryDelay = Math.min(1000 * Math.pow(2, retryCount), MAX_RETRY_DELAY);
-                setTimeout(fetchStatus, retryDelay);
-            }
+        function fetchStatus() {
+            fetch(API_BASE + '/status')
+                .then(function(response) {
+                    if (!response.ok) throw new Error('Server error');
+                    return response.json();
+                })
+                .then(function(data) {
+                    updateUI(data);
+                    updateConnectionStatus(true);
+                    retryCount = 0;
+                })
+                .catch(function(error) {
+                    updateConnectionStatus(false);
+                    retryCount++;
+                    var retryDelay = Math.min(1000 * Math.pow(2, retryCount), MAX_RETRY_DELAY);
+                    setTimeout(fetchStatus, retryDelay);
+                });
         }
 
         function startAutoRefresh() {
@@ -444,32 +447,39 @@
             }, 3000);
         }
 
-        async function apiCall(endpoint, method = 'POST', body = null) {
+        function apiCall(endpoint, method, body) {
+            method = method || 'POST';
+            body = body || null;
+            
             if (!isConnected) {
                 showAlert('Server is disconnected. Please wait...', 'error');
                 return;
             }
 
-            try {
-                const options = {
-                    method,
-                    headers: body ? { 'Content-Type': 'application/json' } : {}
-                };
-                if (body) options.body = JSON.stringify(body);
+            var options = {
+                method: method,
+                headers: body ? { 'Content-Type': 'application/json' } : {}
+            };
+            if (body) options.body = JSON.stringify(body);
 
-                const response = await fetch(`${API_BASE}${endpoint}`, options);
-                const data = await response.json();
-                
-                if (response.ok) {
-                    showAlert(data.message || 'Success', 'success');
-                    fetchStatus();
-                } else {
-                    showAlert(data.detail || 'Error occurred', 'error');
-                }
-            } catch (error) {
-                updateConnectionStatus(false);
-                showAlert('Network error', 'error');
-            }
+            fetch(API_BASE + endpoint, options)
+                .then(function(response) {
+                    return response.json().then(function(data) {
+                        return { response: response, data: data };
+                    });
+                })
+                .then(function(result) {
+                    if (result.response.ok) {
+                        showAlert(result.data.message || 'Success', 'success');
+                        fetchStatus();
+                    } else {
+                        showAlert(result.data.detail || 'Error occurred', 'error');
+                    }
+                })
+                .catch(function(error) {
+                    updateConnectionStatus(false);
+                    showAlert('Network error', 'error');
+                });
         }
 
         document.getElementById('btnStartStream').addEventListener('click', () => {
@@ -501,36 +511,42 @@
             apiCall('/server/restart', 'POST', settings);
         });
 
-        document.getElementById('btnSnapshot').addEventListener('click', async () => {
+        document.getElementById('btnSnapshot').addEventListener('click', function() {
             if (!isConnected) {
                 showAlert('Server is disconnected. Please wait...', 'error');
                 return;
             }
 
-            try {
-                const response = await fetch(`${API_BASE}/snapshot`);
-                
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const imageUrl = URL.createObjectURL(blob);
+            fetch(API_BASE + '/snapshot')
+                .then(function(response) {
+                    if (response.ok) {
+                        return response.blob();
+                    } else {
+                        return response.json().then(function(data) {
+                            throw new Error(data.detail || 'Failed to capture snapshot');
+                        });
+                    }
+                })
+                .then(function(blob) {
+                    var imageUrl = URL.createObjectURL(blob);
+                    var snapshotImage = document.getElementById('snapshotImage');
+                    var snapshotPlaceholder = document.getElementById('snapshotPlaceholder');
                     
-                    // Show image, hide placeholder
-                    const snapshotImage = document.getElementById('snapshotImage');
-                    const snapshotPlaceholder = document.getElementById('snapshotPlaceholder');
+                    // Revoke previous URL to prevent memory leak
+                    if (snapshotImage.src && snapshotImage.src.startsWith('blob:')) {
+                        URL.revokeObjectURL(snapshotImage.src);
+                    }
                     
                     snapshotImage.src = imageUrl;
                     snapshotImage.classList.remove('hidden');
                     snapshotPlaceholder.classList.add('hidden');
                     
                     showAlert('Snapshot captured successfully!', 'success');
-                } else {
-                    const data = await response.json();
-                    showAlert(data.detail || 'Failed to capture snapshot', 'error');
-                }
-            } catch (error) {
-                updateConnectionStatus(false);
-                showAlert('Network error while capturing snapshot', 'error');
-            }
+                })
+                .catch(function(error) {
+                    updateConnectionStatus(false);
+                    showAlert(error.message || 'Network error while capturing snapshot', 'error');
+                });
         });
 
         // Initial fetch and start auto-refresh

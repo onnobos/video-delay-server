@@ -42,12 +42,17 @@ class StreamManager:
     def start_streaming(self):
         if self.stream and not self.stream.streaming:
             self.stream.streaming = True
+            # Automatically start recording when streaming starts
+            if not self.stream.is_recording:
+                self.stream.start_recording()
             logger.info("Manager: Streaming activated.")
 
     def stop_streaming(self):
         if self.stream and self.stream.streaming:
             self.stream.streaming = False
-            # Also ensures recording stops if tied to streaming
+            # Automatically stop recording when streaming stops
+            if self.stream.is_recording:
+                self.stream.stop_recording()
             logger.info("Manager: Streaming deactivated.")
 
     def toggle_pause(self):

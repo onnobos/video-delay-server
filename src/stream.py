@@ -5,10 +5,14 @@ import os
 import datetime
 from collections import deque
 from fractions import Fraction
+from typing import Optional
+
+# NDI Imports
 from cyndilib.sender import Sender
 from cyndilib.video_frame import VideoSendFrame
 from cyndilib.wrapper.ndi_structs import FourCC
 
+# App Imports
 from src.settings import StreamSettings
 from src.logger import get_logger
 
@@ -17,173 +21,171 @@ logger = get_logger(__name__)
 RECORDINGS_DIR = "recordings"
 THUMBNAILS_DIR = "thumbnails"
 
+class VideoRecorder(threading.Thread):
+    """
+    Dedicated thread for writing to disk. 
+    Prevents disk lag from freezing the NDI stream.
+    """
+    def __init__(self, filename, width, height, fps, queue):
+        super().__init__()
+        self.filename = filename
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.queue = queue
+        self.running = True
+        self.writer = None
+
+    def run(self):
+        # Initialize Writer
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(self.filename), exist_ok=True)
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.writer = cv2.VideoWriter(self.filename, fourcc, self.fps, (self.width, self.height))
+        
+        while self.running or len(self.queue) > 0:
+            if len(self.queue) > 0:
+                frame = self.queue.popleft()
+                if self.writer:
+                    self.writer.write(frame)
+            else:
+                time.sleep(0.01) # Sleep if no frames to write
+        
+        if self.writer:
+            self.writer.release()
+            logger.info(f"Video saved: {self.filename}")
+
+    def stop(self):
+        self.running = False
+
 class VideoDelayStream:
     def __init__(self, settings: StreamSettings, auto_start=False, headless=False):
         self.settings = settings
         self.running = True
-        self.streaming = auto_start  # If auto_start is True, start streaming immediately
-        self.paused = False     # 'p' to pause
+        self.streaming = auto_start
+        self.paused = False
         self.headless = headless
+        
+        # Main Delay Buffer
         self.buffer = deque(maxlen=self.settings.buffer_size)
-        self.writer = None
+        
+        # Recording State
         self.is_recording = False
+        self.rec_queue = deque(maxlen=300) # Limit queue to prevent memory overflow (~10s at 30fps)
+        self.recorder_thread: Optional[VideoRecorder] = None
         self.current_recording_name = None
         self.thumbnail_saved = False
+        
         self.latest_frame = None
         self.frame_lock = threading.Lock()
         
-        # Ensure recordings and thumbnails directories exist
-        if not os.path.exists(RECORDINGS_DIR):
-            os.makedirs(RECORDINGS_DIR)
-        if not os.path.exists(THUMBNAILS_DIR):
-            os.makedirs(THUMBNAILS_DIR)
+        # Ensure directories
+        os.makedirs(RECORDINGS_DIR, exist_ok=True)
+        os.makedirs(THUMBNAILS_DIR, exist_ok=True)
         
         # 1. Setup Camera
         self.cap = cv2.VideoCapture(self.settings.cam_index_primary)
         if not self.cap.isOpened():
-            logger.info(f"Camera {self.settings.cam_index_primary} failed, trying index {self.settings.cam_index_secondary}...")
+            logger.warning(f"Camera {self.settings.cam_index_primary} failed, trying {self.settings.cam_index_secondary}...")
             self.cap = cv2.VideoCapture(self.settings.cam_index_secondary)
             
         if not self.cap.isOpened():
-            raise ValueError("Could not open video device. Check Permissions in System Settings > Privacy > Camera.")
-
+             raise ValueError("Could not open video device.")
+        
+        # Request Resolution
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.settings.height)
         self.cap.set(cv2.CAP_PROP_FPS, self.settings.fps)
 
-        # --- Verify Camera Resolution ---
+        # Get Actual Config
         ret, test_frame = self.cap.read()
-        if not ret:
-            raise ValueError("Could not read a frame from camera immediately after opening. Check device.")
-        
+        if not ret: raise ValueError("Camera failed to read first frame.")
         h, w, c = test_frame.shape
-        logger.info(f"Camera initialized. Request: {self.settings.width}x{self.settings.height} @ {self.settings.fps}fps. Actual: {w}x{h} @ {self.cap.get(cv2.CAP_PROP_FPS)}fps")
+        self.width, self.height = int(w), int(h)
+        self.actual_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
         
-        # Use ACTUAL dimensions for NDI to avoid buffer mismatch crashes
-        self.width = int(w)
-        self.height = int(h)
+        logger.info(f"Camera initialized: {self.width}x{self.height} @ {self.actual_fps}FPS")
         
-        # 2. Setup NDI Sender
-        try:
-            self.sender = Sender(ndi_name=self.settings.source_name, clock_video=True)
-            
-            # Configure VideoSendFrame via setters (constructor args are ignored)
-            self.vf = VideoSendFrame()
-            self.vf.set_resolution(self.width, self.height)
-            self.vf.set_fourcc(FourCC.BGRA)
-            self.vf.set_frame_rate(Fraction(30000, 1001))
-            
-            # Attach the frame to the sender BEFORE opening
-            self.sender.set_video_frame(self.vf)
-            
-            self.sender.open()
-            logger.info(f"NDI Stream started: '{self.settings.source_name}' with {self.settings.delay_seconds}s delay.")
-            
-        except Exception as e:
-            logger.error(f"Error during NDI setup: {e}")
-            raise e
+        # 2. Setup NDI
+        # clock_video=False because we control the timing manually in transmit_loop
+        self.sender = Sender(ndi_name=self.settings.source_name, clock_video=False) 
+        self.vf = VideoSendFrame()
+        self.vf.set_resolution(self.width, self.height)
+        self.vf.set_fourcc(FourCC.BGRA)
+        self.vf.set_frame_rate(Fraction(30000, 1001)) # ~29.97 fps
+        self.sender.set_video_frame(self.vf)
+        self.sender.open()
+        
+        logger.info(f"NDI Stream started: '{self.settings.source_name}' with {self.settings.delay_seconds}s delay.")
 
     def capture_loop(self):
-        """Reads frames continuously to keep camera buffer empty."""
+        """Reads frames continuously. This keeps the camera buffer empty."""
         while self.running:
             ret, frame = self.cap.read()
             if ret:
-                # Add timestamp overlay at capture time (before buffering)
+                # OPTIMIZATION: Simple timestamp overlay
                 timestamp = time.strftime("%H:%M:%S")
-                # Black outline
+                # Black Outline
                 cv2.putText(frame, timestamp, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 6)
-                # White text
+                # White Text
                 cv2.putText(frame, timestamp, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
-                
-                # Store latest frame for snapshot feature (thread-safe)
+
+                # Store reference for snapshot (Thread Safe)
                 with self.frame_lock:
-                    self.latest_frame = frame.copy()
-                
+                    self.latest_frame = frame.copy()  # Copy to prevent memory leak 
+
+                # Add to delay buffer
                 self.buffer.append(frame)
             else:
-                time.sleep(0.001)
-
-    def start_recording(self):
-        if self.is_recording:
-            return
-
-        # Filename: yyyy-mm-dd_HH-MM-SS.mp4
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self.current_recording_name = timestamp
-        filename = os.path.join(RECORDINGS_DIR, f"{timestamp}.mp4")
-        
-        # Define codec and create VideoWriter
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-        self.writer = cv2.VideoWriter(filename, fourcc, self.settings.fps, (self.width, self.height))
-        
-        self.is_recording = True
-        self.thumbnail_saved = False
-        logger.info(f"Recording started: {filename}")
-
-    def stop_recording(self):
-        if self.writer:
-            self.writer.release()
-            self.writer = None
-        self.is_recording = False
-        logger.info("Recording stopped.")
+                time.sleep(0.005)
 
     def transmit_loop(self):
-        """Sends the oldest frame via NDI and handles user input."""
+        """
+        Sends frames to NDI and manages Recording.
+        Controls the PACING of the stream.
+        """
         if not self.headless:
             logger.info("Press 's' to Start Stream, 'p' to Pause, 'q' to Quit.")
         else:
             logger.info("Running in headless mode. Press Ctrl+C to stop.")
+            
+        target_frame_time = 1.0 / self.actual_fps
         
         while self.running:
+            start_time = time.time()
+            
+            # Only process if we have reached the delay buffer size
             if len(self.buffer) >= self.settings.buffer_size:
-                frame_bgr = self.buffer.popleft() # Get oldest frame
+                frame_bgr = self.buffer.popleft()
                 
-                if frame_bgr is None or frame_bgr.size == 0:
-                    continue
-
-                # Safety check for dimensions
-                h, w = frame_bgr.shape[:2]
-                if w != self.width or h != self.height:
-                    frame_bgr = cv2.resize(frame_bgr, (self.width, self.height))
-                
-                # --- Recording Logic ---
-                # Record only if streaming and not paused
-                if self.streaming and not self.paused:
-                    if not self.is_recording:
-                        self.start_recording()
-                    if self.writer:
-                        self.writer.write(frame_bgr)
-                        
-                        # Generate thumbnail from first frame
-                        if not self.thumbnail_saved and self.current_recording_name:
-                            thumbnail_path = os.path.join(THUMBNAILS_DIR, f"{self.current_recording_name}.jpg")
-                            # Resize for thumbnail (320x180 for 16:9)
-                            thumb_height = 180
-                            thumb_width = int(thumb_height * self.width / self.height)
-                            thumbnail = cv2.resize(frame_bgr, (thumb_width, thumb_height))
-                            cv2.imwrite(thumbnail_path, thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                            self.thumbnail_saved = True
-                            logger.info(f"Thumbnail saved: {thumbnail_path}")
+                # 1. Handle Recording (Non-Blocking)
+                if self.is_recording and self.recorder_thread:
+                    self.rec_queue.append(frame_bgr) # Fast append
+                    
+                    # Save Thumbnail Once
+                    if not self.thumbnail_saved and self.current_recording_name:
+                        self._save_thumbnail(frame_bgr)
                 else:
-                    # If we stop streaming or pause, stop/pause recording?
-                    # For now, let's stop recording if we stop streaming.
-                    # If just paused, we technically just stop writing frames, which effectively pauses the video file too.
+                    # Auto-stop recording if streaming stopped
                     if not self.streaming and self.is_recording:
                         self.stop_recording()
 
-                # --- Status Overlay (Only needed if showing preview) ---
+                # 2. Preview (Only if NOT headless)
                 if not self.headless:
+                    # Add status overlay
+                    display_frame = frame_bgr.copy()
                     if self.paused:
-                        cv2.putText(frame_bgr, "PAUSED", (30, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                    elif not self.streaming:
-                        cv2.putText(frame_bgr, "STANDBY - Press 's' to Stream", (30, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                    elif self.is_recording:
-                         cv2.putText(frame_bgr, "REC", (self.width - 100, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-                    # Show Preview
-                    cv2.imshow("Preview (Delayed)", frame_bgr)
-
-                    # Handle Input
+                        cv2.putText(display_frame, "PAUSED", (self.width - 200, 60), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
+                    if self.is_recording:
+                        cv2.putText(display_frame, "REC", (self.width - 100, self.height - 30), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    
+                    cv2.imshow("Preview (Delayed)", display_frame)
+                    del display_frame  # Explicitly release frame memory
+                    
+                    # Handle keyboard input
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord('q'):
                         self.running = False
@@ -197,56 +199,95 @@ class VideoDelayStream:
                         state = "PAUSED" if self.paused else "RESUMED"
                         logger.info(f"Stream {state}.")
 
-                # --- NDI Transmission ---
+                # 3. NDI Send (The Critical Path)
                 if self.streaming and not self.paused:
-                    # Convert BGR (OpenCV) to BGRA (NDI expects Alpha channel)
+                    # Convert to BGRA (NDI Requirement)
                     frame_bgra = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2BGRA)
-                    
-                    # Write data to the pre-allocated VideoFrame object
-                    # NDI expects a flat 1D buffer, so we flatten the numpy array
                     self.vf.write_data(frame_bgra.reshape(-1))
-                    
-                    # Tell sender to broadcast the current frame
                     self.sender.send_video()
             else:
-                # Fill buffer: tiny sleep to prevent CPU spinning
-                time.sleep(0.005) 
+                # Buffer filling up... wait a tiny bit
+                time.sleep(0.002)
+                continue
 
-    def start(self, blocking=True):
-        t_cap = threading.Thread(target=self.capture_loop)
-        t_cap.daemon = True
-        t_cap.start()
+            # --- PACER LOGIC ---
+            # Sleep remainder of frame time to maintain steady FPS
+            processing_time = time.time() - start_time
+            sleep_needed = target_frame_time - processing_time
+            if sleep_needed > 0:
+                time.sleep(sleep_needed)
 
-        if blocking:
-            try:
-                self.transmit_loop()
-            except KeyboardInterrupt:
-                self.stop()
-        else:
-            t_trans = threading.Thread(target=self.transmit_loop)
-            t_trans.daemon = True
-            t_trans.start()
+    def _save_thumbnail(self, frame):
+        try:
+            filename = os.path.join(THUMBNAILS_DIR, f"{self.current_recording_name}.jpg")
+            # Resize to small jpg
+            thumb_height = 180
+            thumb_width = int(thumb_height * self.width / self.height)
+            thumb = cv2.resize(frame, (thumb_width, thumb_height))
+            cv2.imwrite(filename, thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            self.thumbnail_saved = True
+            logger.info(f"Thumbnail saved: {filename}")
+        except Exception as e:
+            logger.error(f"Thumbnail save failed: {e}")
+
+    def start_recording(self):
+        if self.is_recording: return
+        
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.current_recording_name = timestamp
+        filename = os.path.join(RECORDINGS_DIR, f"{timestamp}.mp4")
+        
+        # Start the Separate Thread
+        self.rec_queue.clear()
+        self.recorder_thread = VideoRecorder(filename, self.width, self.height, self.settings.fps, self.rec_queue)
+        self.recorder_thread.start()
+        
+        self.is_recording = True
+        self.thumbnail_saved = False
+        logger.info(f"Recording started: {filename}")
+
+    def stop_recording(self):
+        if self.recorder_thread:
+            self.recorder_thread.stop()
+            self.recorder_thread.join(timeout=5.0)  # Wait for thread to finish
+            self.recorder_thread = None
+        # Clear recording queue to free memory
+        self.rec_queue.clear()
+        self.is_recording = False
+        logger.info("Recording stopped.")
 
     def get_snapshot(self):
-        """
-        Capture and return the latest frame as JPEG bytes.
-        Returns None if no frame is available.
-        """
+        """Thread-safe snapshot for API."""
         with self.frame_lock:
             if self.latest_frame is not None:
-                # Encode frame as JPEG
                 ret, buffer = cv2.imencode('.jpg', self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ret:
                     return buffer.tobytes()
         return None
 
+    def start(self, blocking=False):
+        """Starts threads. 'blocking' arg is kept for compatibility with manager.py"""
+        if not hasattr(self, 't_cap') or not self.t_cap.is_alive():
+            self.t_cap = threading.Thread(target=self.capture_loop)
+            self.t_cap.daemon = True
+            self.t_cap.start()
+
+        if not hasattr(self, 't_trans') or not self.t_trans.is_alive():
+            self.t_trans = threading.Thread(target=self.transmit_loop)
+            self.t_trans.daemon = True
+            self.t_trans.start()
+            
+        logger.info("Stream threads started.")
+
     def stop(self):
+        logger.info("Stopping stream...")
         self.running = False
         if self.is_recording:
             self.stop_recording()
         if self.cap.isOpened():
             self.cap.release()
-        if hasattr(self, 'sender'):
+        if hasattr(self, 'sender') and self.sender:
             self.sender.close()
-        cv2.destroyAllWindows()
+        if not self.headless:
+            cv2.destroyAllWindows()
         logger.info("Stream stopped.")
