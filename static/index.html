@@ -262,10 +262,6 @@
                     <div class="status-value" id="streamingStatus">Loading...</div>
                 </div>
                 <div class="status-item">
-                    <div class="status-label">Recording</div>
-                    <div class="status-value" id="recordingStatus">Loading...</div>
-                </div>
-                <div class="status-item">
                     <div class="status-label">Delay</div>
                     <div class="status-value" id="delayStatus">Loading...</div>
                 </div>
@@ -351,8 +347,6 @@
                 document.getElementById('serverStatus').className = 'status-value inactive';
                 document.getElementById('streamingStatus').textContent = 'Unknown';
                 document.getElementById('streamingStatus').className = 'status-value inactive';
-                document.getElementById('recordingStatus').textContent = 'Unknown';
-                document.getElementById('recordingStatus').className = 'status-value inactive';
                 document.getElementById('delayStatus').textContent = '--';
                 
                 // Disable all control buttons
@@ -397,21 +391,19 @@
         }
 
         function updateUI(status) {
-            document.getElementById('serverStatus').textContent = status.process_running ? 'Running' : 'Stopped';
-            document.getElementById('serverStatus').className = 'status-value ' + (status.process_running ? 'active' : 'inactive');
+            // API server is always running if we can fetch status
+            document.getElementById('serverStatus').textContent = 'Running';
+            document.getElementById('serverStatus').className = 'status-value active';
 
             document.getElementById('streamingStatus').textContent = status.streaming ? 'Active' : 'Inactive';
             document.getElementById('streamingStatus').className = 'status-value ' + (status.streaming ? 'active' : 'inactive');
-
-            document.getElementById('recordingStatus').textContent = status.recording ? 'Recording' : 'Not Recording';
-            document.getElementById('recordingStatus').className = 'status-value ' + (status.recording ? 'active' : 'inactive');
 
             if (status.paused) {
                 document.getElementById('streamingStatus').textContent = 'Paused';
                 document.getElementById('streamingStatus').className = 'status-value paused';
             }
 
-            document.getElementById('delayStatus').textContent = `${status.settings.delay_seconds}s`;
+            document.getElementById('delayStatus').textContent = status.settings.delay_seconds + 's';
 
             // Only update form fields if they're not currently focused (being edited)
             const delayInput = document.getElementById('delaySeconds');

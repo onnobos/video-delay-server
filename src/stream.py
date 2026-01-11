@@ -61,6 +61,7 @@ class VideoRecorder(threading.Thread):
 
 class VideoDelayStream:
     def __init__(self, settings: StreamSettings, auto_start=False, headless=False):
+        logger.info("VideoDelayStream.__init__ started")
         self.settings = settings
         self.running = True
         self.streaming = auto_start
@@ -85,6 +86,7 @@ class VideoDelayStream:
         os.makedirs(THUMBNAILS_DIR, exist_ok=True)
         
         # 1. Setup Camera
+        logger.info("Opening camera...")
         self.cap = cv2.VideoCapture(self.settings.cam_index_primary)
         if not self.cap.isOpened():
             logger.warning(f"Camera {self.settings.cam_index_primary} failed, trying {self.settings.cam_index_secondary}...")
@@ -103,9 +105,37 @@ class VideoDelayStream:
         if not ret: raise ValueError("Camera failed to read first frame.")
         h, w, c = test_frame.shape
         self.width, self.height = int(w), int(h)
-        self.actual_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
+        del test_frame  # Release test frame memory
         
-        logger.info(f"Camera initialized: {self.width}x{self.height} @ {self.actual_fps}FPS")
+        # Measure actual FPS by capturing frames for 2 seconds
+        logger.info("Measuring camera FPS...")
+        frame_count = 0
+        start_time = time.time()
+        measurement_duration = 2.0
+        
+        while time.time() - start_time < measurement_duration:
+            ret, frame = self.cap.read()
+            if ret:
+                frame_count += 1
+                del frame  # Explicitly release frame memory
+        
+        elapsed = time.time() - start_time
+        measured_fps = frame_count / elapsed
+        requested_fps = self.settings.fps
+        
+        # Use config FPS if camera can deliver it, otherwise use camera's max capability
+        if measured_fps >= requested_fps:
+            self.actual_fps = requested_fps
+            logger.info(f"Camera initialized: {self.width}x{self.height}")
+            logger.info(f"Requested FPS: {requested_fps}")
+            logger.info(f"Measured camera FPS: {measured_fps:.2f}")
+            logger.info(f"Using FPS: {self.actual_fps} (config value - camera can deliver)")
+        else:
+            self.actual_fps = round(measured_fps, 1)
+            logger.info(f"Camera initialized: {self.width}x{self.height}")
+            logger.info(f"Requested FPS: {requested_fps}")
+            logger.info(f"Measured camera FPS: {measured_fps:.2f}")
+            logger.info(f"Using FPS: {self.actual_fps} (camera maximum - cannot reach {requested_fps})")
         
         # 2. Setup NDI
         # clock_video=False because we control the timing manually in transmit_loop
@@ -239,12 +269,12 @@ class VideoDelayStream:
         
         # Start the Separate Thread
         self.rec_queue.clear()
-        self.recorder_thread = VideoRecorder(filename, self.width, self.height, self.settings.fps, self.rec_queue)
+        self.recorder_thread = VideoRecorder(filename, self.width, self.height, self.actual_fps, self.rec_queue)
         self.recorder_thread.start()
         
         self.is_recording = True
         self.thumbnail_saved = False
-        logger.info(f"Recording started: {filename}")
+        logger.info(f"Recording started: {filename} @ {self.actual_fps} FPS")
 
     def stop_recording(self):
         if self.recorder_thread:
@@ -282,6 +312,13 @@ class VideoDelayStream:
     def stop(self):
         logger.info("Stopping stream...")
         self.running = False
+        
+        # Wait for threads to finish before releasing resources
+        if hasattr(self, 't_cap') and self.t_cap.is_alive():
+            self.t_cap.join(timeout=2.0)
+        if hasattr(self, 't_trans') and self.t_trans.is_alive():
+            self.t_trans.join(timeout=2.0)
+        
         if self.is_recording:
             self.stop_recording()
         if self.cap.isOpened():

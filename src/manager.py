@@ -54,6 +54,8 @@ class StreamManager:
             if self.stream.is_recording:
                 self.stream.stop_recording()
             logger.info("Manager: Streaming deactivated.")
+            # Stop and cleanup the entire stream to release camera
+            self.stop()
 
     def toggle_pause(self):
         if self.stream:

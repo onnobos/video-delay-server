@@ -34,12 +34,6 @@ def root():
     """Redirect to the control panel."""
     return RedirectResponse(url="/static/index.html")
 
-@app.on_event("startup")
-def startup_event():
-    # Auto-start manager in standby mode if desired, or just wait for command
-    # For now, we start the manager process so it's ready, but streaming is off by default
-    manager.start()
-
 @app.on_event("shutdown")
 def shutdown_event():
     manager.stop()
@@ -72,8 +66,9 @@ def restart_server(settings: StreamSettings):
 @app.post("/stream/start")
 def start_stream():
     """Start NDI streaming and recording."""
+    # Initialize stream if needed (lazy initialization)
     if not manager.is_running:
-        raise HTTPException(status_code=400, detail="Server process is not running. Call /server/start first.")
+        manager.start()
     manager.start_streaming()
     return {"message": "Streaming started", "status": manager.get_status()}
 

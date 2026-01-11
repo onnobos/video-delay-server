@@ -54,7 +54,7 @@ def setup_logger(name: str, log_file: str = None, level=logging.INFO):
 
 def get_logger(name: str):
     """
-    Get an existing logger or create a new one.
+    Get an existing logger or create a new one with file logging.
     
     Args:
         name: Logger name (usually __name__)
@@ -62,4 +62,30 @@ def get_logger(name: str):
     Returns:
         Logger instance
     """
-    return logging.getLogger(name)
+    logger = logging.getLogger(name)
+    
+    # If logger already has handlers, return it
+    if logger.handlers:
+        return logger
+    
+    # Otherwise set it up with file logging
+    logger.setLevel(logging.INFO)
+    
+    # Create formatters
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Ensure logs directory exists
+    logs_dir = Path('logs')
+    logs_dir.mkdir(exist_ok=True)
+    
+    # Create file handler
+    log_path = logs_dir / 'videoserver.log'
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+    
+    return logger
