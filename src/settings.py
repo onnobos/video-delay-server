@@ -4,9 +4,10 @@ from src.config import (
     FPS,
     WIDTH,
     HEIGHT,
-    SOURCE_NAME,
     CAM_INDEX_PRIMARY,
-    CAM_INDEX_SECONDARY
+    CAM_INDEX_SECONDARY,
+    HLS_SEGMENT_DURATION,
+    HLS_LIST_SIZE,
 )
 
 class StreamSettings(BaseModel):
@@ -14,9 +15,10 @@ class StreamSettings(BaseModel):
     fps: int = FPS
     width: int = WIDTH
     height: int = HEIGHT
-    source_name: str = SOURCE_NAME
     cam_index_primary: int = CAM_INDEX_PRIMARY
     cam_index_secondary: int = CAM_INDEX_SECONDARY
+    hls_segment_duration: int = HLS_SEGMENT_DURATION
+    hls_list_size: int = HLS_LIST_SIZE
 
     @property
     def buffer_size(self) -> int:

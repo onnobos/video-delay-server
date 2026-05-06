@@ -236,6 +236,55 @@
             font-size: 14px;
         }
 
+        .video-player {
+            width: 100%;
+            border-radius: 8px;
+            background: #000;
+            display: block;
+        }
+
+        .video-wrapper {
+            position: relative;
+        }
+
+        .btn-fullscreen {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 16px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .video-wrapper:hover .btn-fullscreen {
+            opacity: 1;
+        }
+
+        .video-wrapper:-webkit-full-screen video,
+        .video-wrapper:fullscreen video {
+            width: 100vw;
+            height: 100vh;
+            border-radius: 0;
+        }
+
+        .hls-url-box {
+            background: #f7f7f7;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-family: monospace;
+            font-size: 13px;
+            color: #444;
+            word-break: break-all;
+            margin-top: 8px;
+        }
+
         @media (max-width: 480px) {
             .status-grid {
                 grid-template-columns: 1fr;
@@ -277,7 +326,18 @@
         </div>
 
         <div class="card">
-            <h2 style="margin-bottom: 16px; font-size: 20px;">📸 Snapshot</h2>
+            <h2 style="margin-bottom: 16px; font-size: 20px;">📡 Live Delayed Stream</h2>
+            <p style="color: #666; margin-bottom: 12px;">WebRTC stream — starts playing when streaming is active.</p>
+            <a href="/static/player.html" target="_blank" class="btn btn-secondary" style="display:inline-block; text-decoration:none; margin-bottom:12px;">🖥️ Open Full Page Player</a>
+            <div class="video-wrapper">
+                <video id="webrtcPlayer" class="video-player" autoplay muted playsinline></video>
+                <button class="btn-fullscreen" id="btnFullscreen" title="Fullscreen">⛶</button>
+            </div>
+            <p style="color: #666; font-size: 13px; margin-top: 10px;" id="webrtcStatus">Waiting for stream...</p>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 16px; font-size: 20px;">� Snapshot</h2>
             <p style="color: #666; margin-bottom: 16px;">Capture the current frame from the camera.</p>
             <button class="btn btn-secondary" id="btnSnapshot">📸 Take Snapshot</button>
             <div class="snapshot-container">
@@ -294,11 +354,6 @@
             <div class="settings-group">
                 <label for="delaySeconds">Delay (seconds)</label>
                 <input type="number" id="delaySeconds" min="1" max="60" value="10">
-            </div>
-
-            <div class="settings-group">
-                <label for="sourceName">NDI Source Name</label>
-                <input type="text" id="sourceName" value="Volleyball-Delay-Cam">
             </div>
 
             <div class="settings-group">
@@ -319,7 +374,6 @@
     </div>
 
     <script>
-        'use strict';
         var API_BASE = window.location.origin;
         var autoRefreshInterval = null;
         var isConnected = true;
@@ -327,7 +381,7 @@
         var MAX_RETRY_DELAY = 10000; // Max 10 seconds between retries
 
         function updateConnectionStatus(connected) {
-            const statusEl = document.getElementById('connectionStatus');
+            var statusEl = document.getElementById('connectionStatus');
             if (connected && !isConnected) {
                 // Reconnected
                 statusEl.textContent = '● Connected';
@@ -390,6 +444,100 @@
             }
         }
 
+        var webrtcPc = null;
+        var wasStreaming = false;
+
+        function setWebrtcStatus(msg) {
+            document.getElementById('webrtcStatus').textContent = msg;
+        }
+
+        function stopWebRTC() {
+            if (webrtcPc) {
+                webrtcPc.close();
+                webrtcPc = null;
+            }
+            var video = document.getElementById('webrtcPlayer');
+            video.srcObject = null;
+            setWebrtcStatus('Stream stopped.');
+        }
+
+        function startWebRTC() {
+            if (webrtcPc) return;
+            setWebrtcStatus('Connecting...');
+
+            var pc = new RTCPeerConnection({
+                iceServers: []
+            });
+            webrtcPc = pc;
+
+            pc.ontrack = function(event) {
+                var video = document.getElementById('webrtcPlayer');
+                if (event.streams && event.streams[0]) {
+                    video.srcObject = event.streams[0];
+                    var p = video.play();
+                    if (p && p.catch) { p.catch(function() {}); }
+                    setWebrtcStatus('Live — WebRTC');
+                }
+            };
+
+            pc.oniceconnectionstatechange = function() {
+                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                    setWebrtcStatus('Connection lost. Retrying...');
+                    stopWebRTC();
+                    wasStreaming = false;
+                }
+            };
+
+            pc.addTransceiver('video', { direction: 'recvonly' });
+
+            pc.createOffer().then(function(offer) {
+                return pc.setLocalDescription(offer);
+            }).then(function() {
+                return new Promise(function(resolve) {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        pc.onicegatheringcomplete = resolve;
+                        pc.onicecandidate = function(e) {
+                            if (!e.candidate) resolve();
+                        };
+                        setTimeout(resolve, 2000);
+                    }
+                });
+            }).then(function() {
+                return fetch('/offer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    })
+                });
+            }).then(function(resp) {
+                return resp.json();
+            }).then(function(answer) {
+                return pc.setRemoteDescription(new RTCSessionDescription(answer));
+            }).then(function() {
+                setWebrtcStatus('Negotiated — waiting for video...');
+            }).catch(function(err) {
+                setWebrtcStatus('Error: ' + err.message);
+                stopWebRTC();
+                wasStreaming = false;
+            });
+        }
+
+        function initWebRTCPlayer(streaming) {
+            if (!streaming) {
+                if (wasStreaming) { stopWebRTC(); }
+                wasStreaming = false;
+                return;
+            }
+            if (streaming && !wasStreaming) {
+                wasStreaming = true;
+                startWebRTC();
+            }
+        }
+
         function updateUI(status) {
             // API server is always running if we can fetch status
             document.getElementById('serverStatus').textContent = 'Running';
@@ -406,23 +554,22 @@
             document.getElementById('delayStatus').textContent = status.settings.delay_seconds + 's';
 
             // Only update form fields if they're not currently focused (being edited)
-            const delayInput = document.getElementById('delaySeconds');
-            const sourceInput = document.getElementById('sourceName');
-            const fpsInput = document.getElementById('fps');
+            var delayInput = document.getElementById('delaySeconds');
+            var fpsInput = document.getElementById('fps');
 
             if (document.activeElement !== delayInput) {
                 delayInput.value = status.settings.delay_seconds;
-            }
-            if (document.activeElement !== sourceInput) {
-                sourceInput.value = status.settings.source_name;
             }
             if (document.activeElement !== fpsInput) {
                 fpsInput.value = status.settings.fps;
             }
 
+            // Update WebRTC player
+            initWebRTCPlayer(status.streaming && !status.paused);
+
             // Update button states
-            const streaming = status.streaming;
-            const paused = status.paused;
+            var streaming = status.streaming;
+            var paused = status.paused;
             
             document.getElementById('btnStartStream').disabled = streaming;
             document.getElementById('btnStopStream').disabled = !streaming;
@@ -430,12 +577,13 @@
             document.getElementById('btnResumeStream').disabled = !streaming || !paused;
         }
 
-        function showAlert(message, type = 'success') {
-            const alert = document.getElementById('alert');
-            alert.textContent = message;
-            alert.className = `alert alert-${type}`;
-            setTimeout(() => {
-                alert.className = 'alert hidden';
+        function showAlert(message, type) {
+            type = type || 'success';
+            var alertEl = document.getElementById('alert');
+            alertEl.textContent = message;
+            alertEl.className = 'alert alert-' + type;
+            setTimeout(function() {
+                alertEl.className = 'alert hidden';
             }, 3000);
         }
 
@@ -474,26 +622,25 @@
                 });
         }
 
-        document.getElementById('btnStartStream').addEventListener('click', () => {
+        document.getElementById('btnStartStream').addEventListener('click', function() {
             apiCall('/stream/start');
         });
 
-        document.getElementById('btnStopStream').addEventListener('click', () => {
+        document.getElementById('btnStopStream').addEventListener('click', function() {
             apiCall('/stream/stop');
         });
 
-        document.getElementById('btnPauseStream').addEventListener('click', () => {
+        document.getElementById('btnPauseStream').addEventListener('click', function() {
             apiCall('/stream/pause');
         });
 
-        document.getElementById('btnResumeStream').addEventListener('click', () => {
+        document.getElementById('btnResumeStream').addEventListener('click', function() {
             apiCall('/stream/resume');
         });
 
-        document.getElementById('btnApplySettings').addEventListener('click', () => {
-            const settings = {
+        document.getElementById('btnApplySettings').addEventListener('click', function() {
+            var settings = {
                 delay_seconds: parseInt(document.getElementById('delaySeconds').value),
-                source_name: document.getElementById('sourceName').value,
                 fps: parseInt(document.getElementById('fps').value),
                 width: 1280,
                 height: 720,
@@ -539,6 +686,12 @@
                     updateConnectionStatus(false);
                     showAlert(error.message || 'Network error while capturing snapshot', 'error');
                 });
+        });
+
+        document.getElementById('btnFullscreen').addEventListener('click', function() {
+            var wrapper = document.getElementById('webrtcPlayer').parentElement;
+            var req = wrapper.requestFullscreen || wrapper.webkitRequestFullscreen || wrapper.mozRequestFullScreen;
+            if (req) { req.call(wrapper); }
         });
 
         // Initial fetch and start auto-refresh

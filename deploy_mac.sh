@@ -28,7 +28,18 @@ if launchctl list | grep -q "$PLIST_LABEL"; then
 fi
 
 # ==========================================
-# 2. CREATE AGENT
+# 2. INSTALL DEPENDENCIES
+# ==========================================
+echo "--- Installing Python dependencies ---"
+"$VENV_DIR/bin/pip" install -r "$PROJECT_DIR/requirements.txt" --quiet
+
+# Allow Python through macOS firewall so iPhones/other devices on the network can connect
+echo "--- Allowing Python through macOS firewall ---"
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "$VENV_DIR/bin/python" 2>/dev/null || true
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$VENV_DIR/bin/python" 2>/dev/null || true
+
+# ==========================================
+# 3. CREATE AGENT
 # ==========================================
 echo "--- Creating Plist at $PLIST_FILE ---"
 
@@ -79,13 +90,13 @@ cat > "$PLIST_FILE" <<EOF
 EOF
 
 # ==========================================
-# 3. LAUNCH
+# 4. LAUNCH
 # ==========================================
 echo "--- Starting Service ---"
 launchctl load "$PLIST_FILE"
 
 # ==========================================
-# 4. VERIFY
+# 5. VERIFY
 # ==========================================
 sleep 2
 PID=$(pgrep -f "main.py --api")
@@ -95,9 +106,10 @@ if [ -n "$PID" ]; then
     echo ""
     echo "✅ SUCCESS! Service is running (PID: $PID)"
     echo "---------------------------------------------------"
-    echo "Access at: http://$IP_ADDRESS:$PORT"
+    echo "Control panel: http://$IP_ADDRESS:$PORT"
+    echo "Full screen player: http://$IP_ADDRESS:$PORT/static/player.html"
     echo "---------------------------------------------------"
-    echo "⚠️  IMPORTANT: If camera fails, see Step 4 below!"
+    echo "⚠️  IMPORTANT: If camera fails, grant Terminal camera access in System Settings → Privacy."
 else
     echo "❌ Failed to start. Check logs: cat logs/videoserver_error.log"
 fi

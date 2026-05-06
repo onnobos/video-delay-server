@@ -3,14 +3,10 @@ import time
 import threading
 import os
 import datetime
+import subprocess
+import glob
 from collections import deque
-from fractions import Fraction
 from typing import Optional
-
-# NDI Imports
-from cyndilib.sender import Sender
-from cyndilib.video_frame import VideoSendFrame
-from cyndilib.wrapper.ndi_structs import FourCC
 
 # App Imports
 from src.settings import StreamSettings
@@ -20,11 +16,107 @@ logger = get_logger(__name__)
 
 RECORDINGS_DIR = "recordings"
 THUMBNAILS_DIR = "thumbnails"
+HLS_DIR = os.path.join("static", "hls")
+
+class HLSWriter(threading.Thread):
+    """
+    Dedicated thread that drains a frame queue into an FFmpeg HLS subprocess.
+    The transmit loop enqueues frames (non-blocking); this thread writes them
+    to FFmpeg stdin at a paced interval, keeping speed=1.0x.
+    """
+    def __init__(self, width, height, fps_int, hls_dir, segment_duration, list_size):
+        super().__init__(daemon=True)
+        self.width = width
+        self.height = height
+        self.fps_int = fps_int
+        self.hls_dir = hls_dir
+        self.segment_duration = segment_duration
+        self.list_size = list_size
+        self._queue = deque(maxlen=fps_int)  # 1s safety buffer; drops oldest if full
+        self._running = True
+        self.proc = None
+
+    ENCODE_WIDTH = 854
+    ENCODE_HEIGHT = 480
+
+    def run(self):
+        hls_dir_abs = os.path.abspath(self.hls_dir)
+        playlist_path = os.path.join(hls_dir_abs, "stream.m3u8")
+        segment_pattern = os.path.join(hls_dir_abs, "seg%05d.ts")
+        gop_size = self.fps_int * self.segment_duration
+
+        for f in glob.glob(os.path.join(hls_dir_abs, "*.ts")) + glob.glob(os.path.join(hls_dir_abs, "*.m3u8")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "mjpeg",
+            "-r", str(self.fps_int),
+            "-i", "pipe:0",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            "-profile:v", "baseline",
+            "-level:v", "3.1",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-g", str(gop_size),
+            "-sc_threshold", "0",
+            "-hls_time", str(self.segment_duration),
+            "-hls_list_size", "20",
+            "-hls_flags", "delete_segments",
+            "-hls_allow_cache", "0",
+            "-hls_segment_filename", segment_pattern,
+            playlist_path,
+        ]
+
+        ffmpeg_log = open(os.path.join("logs", "ffmpeg.log"), "w")
+        self.proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=ffmpeg_log,
+            stderr=ffmpeg_log,
+        )
+        logger.info(f"HLSWriter started (PID {self.proc.pid}), {self.fps_int}fps, GOP={gop_size}.")
+
+        while self._running:
+            if self._queue:
+                frame = self._queue.popleft()
+                small = cv2.resize(frame, (HLSWriter.ENCODE_WIDTH, HLSWriter.ENCODE_HEIGHT))
+                ret, jpg = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if not ret:
+                    continue
+                try:
+                    self.proc.stdin.write(jpg.tobytes())
+                except (BrokenPipeError, OSError) as e:
+                    logger.warning(f"HLSWriter pipe error: {e}")
+                    self._running = False
+            else:
+                time.sleep(0.001)
+
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=5.0)
+        except Exception as e:
+            logger.warning(f"HLSWriter stop error: {e}")
+            self.proc.kill()
+        logger.info("HLSWriter stopped.")
+
+    def write(self, frame_bgr):
+        """Enqueue a frame (non-blocking, called from transmit loop)."""
+        self._queue.append(frame_bgr)
+
+    def stop(self):
+        self._running = False
+
 
 class VideoRecorder(threading.Thread):
     """
     Dedicated thread for writing to disk. 
-    Prevents disk lag from freezing the NDI stream.
+    Prevents disk lag from freezing the HLS stream.
     """
     def __init__(self, filename, width, height, fps, queue):
         super().__init__()
@@ -37,21 +129,25 @@ class VideoRecorder(threading.Thread):
         self.writer = None
 
     def run(self):
-        # Initialize Writer
-        # Ensure directory exists
         os.makedirs(os.path.dirname(self.filename), exist_ok=True)
-        
+
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         self.writer = cv2.VideoWriter(self.filename, fourcc, self.fps, (self.width, self.height))
-        
+
+        frame_interval = 1.0 / self.fps
+        next_write = time.monotonic()
+
         while self.running or len(self.queue) > 0:
+            now = time.monotonic()
+            if now < next_write:
+                time.sleep(next_write - now)
+            next_write += frame_interval
+
             if len(self.queue) > 0:
                 frame = self.queue.popleft()
                 if self.writer:
                     self.writer.write(frame)
-            else:
-                time.sleep(0.01) # Sleep if no frames to write
-        
+
         if self.writer:
             self.writer.release()
             logger.info(f"Video saved: {self.filename}")
@@ -79,11 +175,16 @@ class VideoDelayStream:
         self.thumbnail_saved = False
         
         self.latest_frame = None
+        self.delayed_frame = None
         self.frame_lock = threading.Lock()
-        
+
+        # HLS writer thread (started lazily when streaming begins)
+        self.hls_writer: Optional[HLSWriter] = None
+
         # Ensure directories
         os.makedirs(RECORDINGS_DIR, exist_ok=True)
         os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+        os.makedirs(HLS_DIR, exist_ok=True)
         
         # 1. Setup Camera
         logger.info("Opening camera...")
@@ -124,42 +225,37 @@ class VideoDelayStream:
         requested_fps = self.settings.fps
         
         # Use config FPS if camera can deliver it, otherwise use camera's max capability
+        logger.info(f"Camera initialized: {self.width}x{self.height}")
+        logger.info(f"Requested FPS: {requested_fps}")
+        logger.info(f"Measured camera FPS: {measured_fps:.2f}")
         if measured_fps >= requested_fps:
             self.actual_fps = requested_fps
-            logger.info(f"Camera initialized: {self.width}x{self.height}")
-            logger.info(f"Requested FPS: {requested_fps}")
-            logger.info(f"Measured camera FPS: {measured_fps:.2f}")
             logger.info(f"Using FPS: {self.actual_fps} (config value - camera can deliver)")
-        else:
+        elif measured_fps > 1.0:
             self.actual_fps = round(measured_fps, 1)
-            logger.info(f"Camera initialized: {self.width}x{self.height}")
-            logger.info(f"Requested FPS: {requested_fps}")
-            logger.info(f"Measured camera FPS: {measured_fps:.2f}")
             logger.info(f"Using FPS: {self.actual_fps} (camera maximum - cannot reach {requested_fps})")
+        else:
+            self.actual_fps = requested_fps
+            logger.warning(f"FPS measurement unreliable ({measured_fps:.2f}); falling back to requested FPS: {requested_fps}")
         
-        # 2. Setup NDI
-        # clock_video=False because we control the timing manually in transmit_loop
-        self.sender = Sender(ndi_name=self.settings.source_name, clock_video=False) 
-        self.vf = VideoSendFrame()
-        self.vf.set_resolution(self.width, self.height)
-        self.vf.set_fourcc(FourCC.BGRA)
-        self.vf.set_frame_rate(Fraction(30000, 1001)) # ~29.97 fps
-        self.sender.set_video_frame(self.vf)
-        self.sender.open()
-        
-        logger.info(f"NDI Stream started: '{self.settings.source_name}' with {self.settings.delay_seconds}s delay.")
+        logger.info(f"HLS stream ready: {self.width}x{self.height} @ {self.actual_fps} FPS, {self.settings.delay_seconds}s delay.")
 
     def capture_loop(self):
         """Reads frames continuously. This keeps the camera buffer empty."""
         while self.running:
             ret, frame = self.cap.read()
             if ret:
-                # OPTIMIZATION: Simple timestamp overlay
+                # Timestamp overlay (top-left)
                 timestamp = time.strftime("%H:%M:%S")
-                # Black Outline
                 cv2.putText(frame, timestamp, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 6)
-                # White Text
                 cv2.putText(frame, timestamp, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+
+                # FPS overlay (top-right)
+                fps_text = f"{int(self.actual_fps)} FPS"
+                (tw, th), _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 2)
+                fps_x = self.width - tw - 30
+                cv2.putText(frame, fps_text, (fps_x, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 6)
+                cv2.putText(frame, fps_text, (fps_x, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
 
                 # Store reference for snapshot (Thread Safe)
                 with self.frame_lock:
@@ -172,7 +268,7 @@ class VideoDelayStream:
 
     def transmit_loop(self):
         """
-        Sends frames to NDI and manages Recording.
+        Sends frames to HLS and manages Recording.
         Controls the PACING of the stream.
         """
         if not self.headless:
@@ -188,7 +284,11 @@ class VideoDelayStream:
             # Only process if we have reached the delay buffer size
             if len(self.buffer) >= self.settings.buffer_size:
                 frame_bgr = self.buffer.popleft()
-                
+
+                # Store latest delayed frame for WebRTC
+                with self.frame_lock:
+                    self.delayed_frame = frame_bgr
+
                 # 1. Handle Recording (Non-Blocking)
                 if self.is_recording and self.recorder_thread:
                     self.rec_queue.append(frame_bgr) # Fast append
@@ -229,12 +329,8 @@ class VideoDelayStream:
                         state = "PAUSED" if self.paused else "RESUMED"
                         logger.info(f"Stream {state}.")
 
-                # 3. NDI Send (The Critical Path)
-                if self.streaming and not self.paused:
-                    # Convert to BGRA (NDI Requirement)
-                    frame_bgra = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2BGRA)
-                    self.vf.write_data(frame_bgra.reshape(-1))
-                    self.sender.send_video()
+                # HLS disabled — WebRTC handles streaming
+                pass
             else:
                 # Buffer filling up... wait a tiny bit
                 time.sleep(0.002)
@@ -246,6 +342,18 @@ class VideoDelayStream:
             sleep_needed = target_frame_time - processing_time
             if sleep_needed > 0:
                 time.sleep(sleep_needed)
+
+    def _stop_hls_writer(self):
+        """Stop the HLS writer and FFmpeg process."""
+        if self.hls_writer:
+            self.hls_writer.stop()
+            self.hls_writer.join(timeout=8.0)
+            self.hls_writer = None
+            logger.info("HLS writer stopped.")
+
+    def get_hls_playlist_path(self) -> str:
+        """Return the relative URL path to the HLS playlist."""
+        return "/hls/stream.m3u8"
 
     def _save_thumbnail(self, frame):
         try:
@@ -286,11 +394,17 @@ class VideoDelayStream:
         self.is_recording = False
         logger.info("Recording stopped.")
 
-    def get_snapshot(self):
-        """Thread-safe snapshot for API."""
+    def get_delayed_frame(self):
+        """Return the current delayed frame for WebRTC, or None if not ready."""
         with self.frame_lock:
-            if self.latest_frame is not None:
-                ret, buffer = cv2.imencode('.jpg', self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            return self.delayed_frame
+
+    def get_snapshot(self):
+        """Thread-safe snapshot for API. Uses delayed frame at full 1280x720, quality 95."""
+        with self.frame_lock:
+            frame = self.delayed_frame if self.delayed_frame is not None else self.latest_frame
+            if frame is not None:
+                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 if ret:
                     return buffer.tobytes()
         return None
@@ -321,10 +435,9 @@ class VideoDelayStream:
         
         if self.is_recording:
             self.stop_recording()
+        self._stop_hls_writer()
         if self.cap.isOpened():
             self.cap.release()
-        if hasattr(self, 'sender') and self.sender:
-            self.sender.close()
         if not self.headless:
             cv2.destroyAllWindows()
         logger.info("Stream stopped.")

@@ -1,20 +1,21 @@
-# Video Server (NDI Delay Stream)
+# Video Delay Server
 
-A professional Python application that captures video from a webcam, buffers it for a configurable delay (default 5 seconds), and streams it out via NDI (Network Device Interface). Features include automatic recording, thumbnail generation, web-based remote control, snapshot capture, and comprehensive logging.
+A Python application that captures video from a webcam, buffers it for a configurable delay (default 5 seconds), and streams it live to any browser via **WebRTC** — with sub-second overhead on top of the configured delay. Clients on any device (iPhone, iPad, laptop) can watch the delayed stream directly in their browser with no app install. Features include automatic recording, thumbnail generation, web-based remote control, snapshot capture, and comprehensive logging.
 
 ## Features
 
 ### Core Functionality
 - **Video Capture**: Supports generic USB webcams and macOS Continuity Camera
 - **Configurable Delay Buffer**: Creates a "live replay" effect (default 5 seconds)
-- **NDI Output**: Broadcasts as an NDI source for professional video workflows
-- **Timestamp Overlay**: Shows capture time (HH:MM:SS) on each frame to demonstrate delay
+- **WebRTC Streaming**: Ultra-low overhead delivery via `aiortc` — no HLS segmenting delays
+- **Full Page Player**: Dedicated fullscreen player page for iPhone/iPad/desktop
+- **Timestamp & FPS Overlay**: Shows capture time and FPS on each frame to demonstrate delay
 - **Automatic Recording**: Records streams to MP4 files with timestamp-based filenames
 - **Thumbnail Generation**: Creates thumbnails from the first frame of each recording
 
 ### Control & Management
 - **Web Control Panel**: Mobile-friendly interface for remote control
-- **Snapshot Capture**: Take single-frame snapshots from the live camera feed
+- **Snapshot Capture**: Full resolution (1280×720) JPEG snapshots of the delayed stream
 - **Video Gallery**: Browse and download recorded videos with thumbnails
 - **REST API**: Full programmatic control via HTTP endpoints
 - **Headless Mode**: Runs as a background service without GUI
@@ -29,7 +30,6 @@ A professional Python application that captures video from a webcam, buffers it 
 ## Prerequisites
 
 - **Python 3.9+**
-- **NDI Tools/Runtime**: Download from [ndi.video/tools](https://ndi.video/tools/)
 - **Webcam**: USB webcam or built-in camera
 - **macOS**: For deployment scripts (optional)
 
@@ -107,12 +107,13 @@ python3 main.py --api
 
 **Access Points:**
 - **Control Panel**: `http://localhost:8000`
+- **Full Page Player**: `http://localhost:8000/static/player.html`
 - **Video Gallery**: `http://localhost:8000/static/gallery.html`
 - **API Documentation**: `http://localhost:8000/docs`
 
-**From Network Devices:**
-- Replace `localhost` with your server's IP address
-- Example: `http://192.168.1.100:8000`
+**From Network Devices (iPhone, iPad, etc.):**
+- Replace `localhost` with your Mac's IP address
+- Example: `http://192.168.1.100:8000/static/player.html`
 
 ### 2. Headless Streaming
 
@@ -144,14 +145,15 @@ The mobile-friendly control panel provides:
 - **Current Delay**: Shows configured delay time
 
 ### Stream Controls
-- **Start/Stop Streaming**: Begin or end NDI transmission
+- **Start/Stop Streaming**: Begin or end WebRTC transmission
 - **Pause/Resume**: Temporarily pause without stopping
-- **Snapshot Capture**: Take and view single-frame snapshots from the camera
+- **Live Player**: Embedded WebRTC video player — watch the delayed stream right in the control panel
+- **Open Full Page Player**: Opens `player.html` in a new tab — full viewport video, black background
+- **Snapshot Capture**: Take and view full resolution (1280×720) snapshots of the delayed stream
 - **Connection Status**: Real-time server connectivity indicator
 
 ### Settings Management
 - **Delay Duration**: Adjust delay from 1-60 seconds
-- **NDI Source Name**: Change the broadcast name
 - **Frame Rate**: Modify FPS (15-60)
 - **Apply & Restart**: Update settings with automatic restart
 
@@ -177,11 +179,12 @@ Separate page showing all recordings:
 - `POST /server/restart` - Restart with new settings (JSON body)
 
 ### Stream Control
-- `POST /stream/start` - Start NDI streaming and recording
+- `POST /stream/start` - Start WebRTC streaming and recording
 - `POST /stream/stop` - Stop streaming and recording
 - `POST /stream/pause` - Pause transmission
 - `POST /stream/resume` - Resume transmission
-- `GET /snapshot` - Capture and return current frame as JPEG image
+- `POST /offer` - WebRTC SDP offer/answer exchange (used by browser player)
+- `GET /snapshot` - Capture and return delayed frame as full resolution JPEG
 
 ### Example API Usage
 
@@ -197,8 +200,7 @@ curl -X POST http://localhost:8000/server/restart \
   -H "Content-Type: application/json" \
   -d '{
     "delay_seconds": 15,
-    "fps": 30,
-    "source_name": "My-Delay-Cam"
+    "fps": 30
   }'
 
 # List recordings
@@ -216,7 +218,6 @@ DELAY_SECONDS = 5
 FPS = 30
 WIDTH = 1280
 HEIGHT = 720
-SOURCE_NAME = "Volleyball-Delay-Cam"
 CAM_INDEX_PRIMARY = 0
 CAM_INDEX_SECONDARY = 1
 ```
@@ -266,6 +267,7 @@ videoserver/
 │
 ├── static/                 # Web interface files
 │   ├── index.html         # Control panel
+│   ├── player.html        # Full page WebRTC video player
 │   └── gallery.html       # Video gallery
 │
 └── src/                    # Source code
@@ -273,7 +275,8 @@ videoserver/
     ├── config.py          # Default configuration
     ├── settings.py        # Pydantic settings model
     ├── logger.py          # Logging configuration
-    ├── stream.py          # Video streaming logic
+    ├── stream.py          # Video capture, delay buffer, recording
+    ├── webrtc.py          # WebRTC track and signaling
     ├── manager.py         # Stream lifecycle management
     └── server.py          # FastAPI server & endpoints
 ```
@@ -283,8 +286,13 @@ videoserver/
 ### Camera Access Issues
 **macOS**: Grant camera permissions in System Settings > Privacy & Security > Camera
 
-### NDI Not Working
-Ensure NDI Tools are installed from [ndi.video/tools](https://ndi.video/tools/)
+### iPhone/iPad Can't Connect
+The macOS firewall may be blocking port 8000. Allow it:
+```bash
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add $(which python3)
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp $(which python3)
+```
+Or run `deploy_mac.sh` — it handles this automatically.
 
 ### Port Already in Use
 Change the port:
@@ -334,7 +342,7 @@ The modular architecture makes it easy to extend:
 ## Credits
 
 Built with:
-- [OpenCV](https://opencv.org/) - Video processing
-- [cyndilib](https://github.com/buresu/cyndilib) - NDI integration
+- [OpenCV](https://opencv.org/) - Video capture and processing
+- [aiortc](https://github.com/aiortc/aiortc) - WebRTC server implementation
 - [FastAPI](https://fastapi.tiangolo.com/) - Web framework
 - [Uvicorn](https://www.uvicorn.org/) - ASGI server

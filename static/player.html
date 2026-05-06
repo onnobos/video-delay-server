@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
+    <meta name="apple-mobile-web-app-title" content="Live Stream">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>Live Delayed Stream</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #000;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        video {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            display: block;
+        }
+
+        #status {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            color: #fff;
+            padding: 8px 18px;
+            border-radius: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 14px;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+
+        #btnFullscreen {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 18px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        body:hover #btnFullscreen { opacity: 1; }
+
+        #iosHint {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.75);
+            color: #fff;
+            padding: 10px 18px;
+            border-radius: 20px;
+            font-family: -apple-system, sans-serif;
+            font-size: 13px;
+            text-align: center;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <video id="player" autoplay muted playsinline></video>
+    <div id="status">Connecting...</div>
+    <button id="btnFullscreen" title="Fullscreen">⛶</button>
+    <div id="iosHint">Tap Share → "Add to Home Screen" for fullscreen</div>
+
+    <script>
+        var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+        var isStandalone = window.navigator.standalone === true;
+
+        if (isIOS && !isStandalone) {
+            document.getElementById('btnFullscreen').style.display = 'none';
+            document.getElementById('iosHint').style.display = 'block';
+        }
+
+        var pc = null;
+
+        function setStatus(msg) {
+            document.getElementById('status').textContent = msg;
+        }
+
+        function start() {
+            pc = new RTCPeerConnection({ iceServers: [] });
+
+            pc.ontrack = function(event) {
+                var video = document.getElementById('player');
+                if (event.streams && event.streams[0]) {
+                    video.srcObject = event.streams[0];
+                    var p = video.play();
+                    if (p && p.catch) { p.catch(function() {}); }
+                    setStatus('Live — WebRTC');
+                    setTimeout(function() {
+                        document.getElementById('status').style.opacity = '0';
+                    }, 3000);
+                }
+            };
+
+            pc.oniceconnectionstatechange = function() {
+                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                    setStatus('Connection lost — retrying in 3s...');
+                    document.getElementById('status').style.opacity = '1';
+                    pc.close();
+                    pc = null;
+                    setTimeout(start, 3000);
+                }
+            };
+
+            pc.addTransceiver('video', { direction: 'recvonly' });
+
+            pc.createOffer().then(function(offer) {
+                return pc.setLocalDescription(offer);
+            }).then(function() {
+                return new Promise(function(resolve) {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        pc.onicecandidate = function(e) { if (!e.candidate) resolve(); };
+                        setTimeout(resolve, 2000);
+                    }
+                });
+            }).then(function() {
+                return fetch('/offer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type })
+                });
+            }).then(function(resp) {
+                if (!resp.ok) { throw new Error('Stream not ready (HTTP ' + resp.status + ')'); }
+                return resp.json();
+            }).then(function(answer) {
+                return pc.setRemoteDescription(new RTCSessionDescription(answer));
+            }).catch(function(err) {
+                setStatus(err.message + ' — retrying in 3s...');
+                if (pc) { pc.close(); pc = null; }
+                setTimeout(start, 3000);
+            });
+        }
+
+        document.getElementById('btnFullscreen').addEventListener('click', function() {
+            var el = document.documentElement;
+            var req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+            if (req) { req.call(el); }
+        });
+
+        start();
+    </script>
+</body>
+</html>

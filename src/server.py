@@ -1,9 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse, FileResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from src.manager import StreamManager
 from src.settings import StreamSettings
 from src.logger import get_logger
+from src import webrtc
 import os
 import glob
 from datetime import datetime
@@ -11,6 +14,12 @@ from datetime import datetime
 logger = get_logger(__name__)
 
 app = FastAPI(title="Video Delay Server API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 manager = StreamManager()
 
 # Mount static files directory
@@ -29,14 +38,33 @@ if not os.path.exists(thumbnails_dir):
     os.makedirs(thumbnails_dir)
 app.mount("/thumbnails", StaticFiles(directory=thumbnails_dir), name="thumbnails")
 
+# HLS directory — served via custom route with no-cache headers (see /hls/{filename} below)
+hls_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "hls")
+os.makedirs(hls_dir, exist_ok=True)
+
 @app.get("/")
 def root():
     """Redirect to the control panel."""
     return RedirectResponse(url="/static/index.html")
 
 @app.on_event("shutdown")
-def shutdown_event():
+async def shutdown_event():
+    await webrtc.close_all()
     manager.stop()
+
+
+class WebRTCOffer(BaseModel):
+    sdp: str
+    type: str
+
+
+@app.post("/offer")
+async def webrtc_offer(offer: WebRTCOffer):
+    """Accept a WebRTC offer and return an answer to start the video stream."""
+    if not manager.is_running or not manager.stream:
+        raise HTTPException(status_code=400, detail="Stream is not running.")
+    answer = await webrtc.handle_offer(offer.sdp, offer.type, manager.stream)
+    return answer
 
 @app.get("/status")
 def get_status():
@@ -65,16 +93,38 @@ def restart_server(settings: StreamSettings):
 
 @app.post("/stream/start")
 def start_stream():
-    """Start NDI streaming and recording."""
+    """Start HLS streaming and recording."""
     # Initialize stream if needed (lazy initialization)
     if not manager.is_running:
         manager.start()
     manager.start_streaming()
     return {"message": "Streaming started", "status": manager.get_status()}
 
+@app.get("/stream/url")
+def get_stream_url():
+    """Return the HLS playlist URL for this server."""
+    return {"hls_url": "/hls/stream.m3u8"}
+
+@app.get("/hls/{filename}")
+def serve_hls_file(filename: str):
+    """Serve HLS playlist and segments with no-cache headers so browsers always fetch fresh files."""
+    file_path = os.path.join(hls_dir, filename)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Segment not found")
+    media_type = "application/vnd.apple.mpegurl" if filename.endswith(".m3u8") else "video/mp2t"
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
 @app.post("/stream/stop")
 def stop_stream():
-    """Stop NDI streaming and recording."""
+    """Stop HLS streaming and recording."""
     if not manager.is_running:
          raise HTTPException(status_code=400, detail="Server process is not running.")
     manager.stop_streaming()
