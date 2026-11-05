@@ -114,13 +114,12 @@
                 }
             };
 
-            pc.oniceconnectionstatechange = function() {
-                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                    setStatus('Connection lost — retrying in 3s...');
+            pc.onconnectionstatechange = function() {
+                if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                    setStatus('Connection lost — reconnecting...');
                     document.getElementById('status').style.opacity = '1';
-                    pc.close();
-                    pc = null;
-                    setTimeout(start, 3000);
+                    if (pc) { try { pc.close(); } catch(e){} pc = null; }
+                    setTimeout(start, 2000);
                 }
             };
 

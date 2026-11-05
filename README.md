@@ -1,348 +1,189 @@
-# Video Delay Server
+# Video Delay Server 2.0
 
-A Python application that captures video from a webcam, buffers it for a configurable delay (default 5 seconds), and streams it live to any browser via **WebRTC** — with sub-second overhead on top of the configured delay. Clients on any device (iPhone, iPad, laptop) can watch the delayed stream directly in their browser with no app install. Features include automatic recording, thumbnail generation, web-based remote control, snapshot capture, and comprehensive logging.
+A high-performance video delay application engineered for macOS (Apple Silicon M1/M2/M3/M4 & Intel). It ingests video from HDMI capture cards (like the **Elgato Game Capture HD60 S+**), USB webcams, or Continuity Cameras, holds it in a configurable delay buffer (1–120 seconds), and streams it live to any browser via **synchronized WebRTC** with sub-second overhead.
+
+Phones, tablets, and laptops on the local Wi-Fi can watch the delayed live replay directly in their browser without installing any app. Includes automatic H.264 recording, in-browser replay gallery, mobile QR code terminal connection, and dynamic camera switching.
+
+---
 
 ## Features
 
-### Core Functionality
-- **Video Capture**: Supports generic USB webcams and macOS Continuity Camera
-- **Configurable Delay Buffer**: Creates a "live replay" effect (default 5 seconds)
-- **WebRTC Streaming**: Ultra-low overhead delivery via `aiortc` — no HLS segmenting delays
-- **Full Page Player**: Dedicated fullscreen player page for iPhone/iPad/desktop
-- **Timestamp & FPS Overlay**: Shows capture time and FPS on each frame to demonstrate delay
-- **Automatic Recording**: Records streams to MP4 files with timestamp-based filenames
-- **Thumbnail Generation**: Creates thumbnails from the first frame of each recording
+### Core Capabilities
+* **Hardware Camera Discovery & Auto-Default**: Detects connected video devices with friendly names via AVFoundation and automatically defaults to the **Elgato Game Capture HD60 S+**.
+* **Dynamic Camera Switching**: Change active video inputs on the fly via the Web UI dropdown or API without stopping the server.
+* **HDMI Signal-Loss Protection**: Displays an automatic standby screen (*"WAITING FOR VIDEO SIGNAL - Game Capture HD60 S+"*) if an HDMI cable or camera disconnects, and auto-resumes once signal returns.
+* **Synchronized WebRTC Streaming**: Multi-peer synchronized delivery via `aiortc` with monotonic PTS timing — sub-second overhead on top of your chosen delay.
+* **Dynamic Delay Resizing**: Adjust delay buffer duration (1–120s) on-the-fly from the web panel without tearing or rebooting.
+* **Apple Silicon Native H.264 Recording**: Encodes recordings in hardware-accelerated H.264 (`avc1`) MP4 format for native instant playback in iOS Safari, iPadOS, and macOS.
+* **In-Browser Video Gallery**: Review recorded clips with instant in-page modal playback, formatted file sizes, download, and delete controls.
+* **Customizable Visual Overlays**: Toggle live timestamp, FPS counter, and camera name overlays on or off.
+* **Mobile Terminal QR Code**: Prints an ASCII QR code on startup so you can simply scan your terminal screen with an iPhone or Android camera to open the live stream.
 
-### Control & Management
-- **Web Control Panel**: Mobile-friendly interface for remote control
-- **Snapshot Capture**: Full resolution (1280×720) JPEG snapshots of the delayed stream
-- **Video Gallery**: Browse and download recorded videos with thumbnails
-- **REST API**: Full programmatic control via HTTP endpoints
-- **Headless Mode**: Runs as a background service without GUI
-- **Preview Mode**: Optional window with keyboard controls for interactive use
+---
 
-### System Features
-- **Structured Logging**: Comprehensive logging system with file and console output
-- **macOS Service**: Deploy as a background service with auto-start on boot
-- **Connection Monitoring**: Web interface shows real-time connection status
-- **Settings Management**: Dynamic configuration updates without restart
+## Hardware Compatibility (Elgato HD60 S+)
 
-## Prerequisites
+* **Apple Silicon Native**: The **Elgato HD60 S+** is a driverless **UVC (USB Video Class)** device. It is recognized natively by macOS and AVFoundation out of the box without proprietary drivers.
+* **USB 3.0 Required**: The HD60 S+ requires a genuine **USB 3.0 / 3.1 SuperSpeed (5 Gbps)** cable. Standard white Apple USB-C charging cables are USB 2.0 only and will result in black screens.
+* **Clean HDMI Output**: Ensure your camera's HDMI output is clean (no on-screen camera battery/focus UI) and has HDCP disabled.
 
-- **Python 3.9+**
-- **Webcam**: USB webcam or built-in camera
-- **macOS**: For deployment scripts (optional)
+---
 
 ## Quick Start
 
-### Manual Installation
+### ⚡ 1-Command Setup & Launch (macOS)
 
-1. **Clone the repository:**
+Clone the repository and run:
+
+```bash
+chmod +x server.sh
+./server.sh start
+```
+
+The script will automatically:
+1. Detect Python 3.9+ (`python3.11`, `python3.12`, etc.)
+2. Bootstrap the virtual environment (`myenv/`) and install dependencies
+3. Scan connected video devices (defaulting to the **Elgato HD60 S+**)
+4. Launch the background daemon (`LaunchAgent`) with auto-restart on boot
+5. Print local URLs and an **interactive ASCII QR Code** in your terminal
+
+---
+
+### 🎛️ Unified Management CLI (`./server.sh`)
+
+| Command | Description |
+| :--- | :--- |
+| **`./server.sh start`** | Bootstrap environment, install LaunchAgent, start background daemon, and display QR code |
+| **`./server.sh run`** | Run in foreground with live terminal logs and mobile QR code |
+| **`./server.sh status`** | Show health, active PID, camera name, buffer RAM %, viewers, and local URLs |
+| **`./server.sh stop`** | Stop the background service and free port 8000 |
+| **`./server.sh restart`** | Gracefully restart the service |
+| **`./server.sh logs`** | Stream live server logs (`tail -f logs/videoserver.log`) |
+| **`./server.sh uninstall`** | Unload service, remove plist, with optional cleanup of recordings/logs |
+
+*(Legacy scripts `./deploy_mac.sh`, `./stop.sh`, and `./remove_mac.sh` remain supported as seamless shortcuts).*
+
+---
+
+## 📱 Running on Mobile (iPhone, iPad, Android)
+
+1. Ensure your phone is connected to the **same Wi-Fi network** as your Mac.
+2. Open the camera app on your phone and **scan the terminal QR code**, or type:
+   * **Fullscreen Live Replay Player**: `http://<your-mac-ip>:8000/static/player.html`
+   * **Control Panel**: `http://<your-mac-ip>:8000`
+   * **Video Gallery**: `http://<your-mac-ip>:8000/static/gallery.html`
+
+> [!TIP]
+> **iPhone / iPad Fullscreen "App" Mode:**  
+> In Safari, tap the **Share** button (box with up-arrow) ➔ select **"Add to Home Screen"**.  
+> When launched from your Home Screen, it opens as a standalone fullscreen app with no browser address bar or buttons!
+
+---
+
+## 🖥️ Headless M1 / M2 / M3 Mac Setup Guide
+
+Running the Video Delay Server on a **headless Apple Silicon Mac (e.g. Mac mini or MacBook)** is ideal for a dedicated 24/7 sports replay station. Follow these steps to configure unattended operation:
+
+### Step 1: Enable Automatic Login (Critical for Camera Access)
+macOS security (TCC) restricts camera access to active user sessions. To allow headless operation after a reboot:
+1. Go to **System Settings ➔ Users & Groups ➔ Automatically log in as:** ➔ select your user account.
+2. *(Note: FileVault must be disabled for automatic login without keyboard input at boot).*
+
+### Step 2: Prevent Sleep
+Run in Terminal or over SSH:
+```bash
+sudo pmset -a sleep 0
+sudo pmset -a displaysleep 0
+sudo pmset -a womp 1
+```
+
+### Step 3: Grant Camera Permission (One-Time Only)
+macOS will never display a permission dialog over pure SSH. Authorize it once:
+1. Connect to your Mac via **Screen Sharing / VNC** (`vnc://<mac-ip>` from Finder on another Mac, or plug in a monitor once).
+2. Open Terminal inside the graphical session and run:
    ```bash
-   git clone <your-repo-url>
-   cd videoserver
+   ./server.sh run
    ```
+3. When macOS prompts: *"Terminal would like to access the Camera"*, click **Allow**.
+4. Press `Ctrl + C` to stop. Camera access is now permanently saved.
 
-2. **Create and activate virtual environment:**
-   ```bash
-   python3 -m venv myenv
-   source myenv/bin/activate
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run the server:**
-   ```bash
-   python3 main.py --api
-   ```
-
-5. **Access the web interface:**
-   - Open `http://localhost:8000` in your browser
-
-### macOS Deployment (Recommended)
-
-Deploy as a background service that starts automatically on boot:
-
+### Step 4: Start the Background Daemon
 ```bash
-chmod +x deploy_mac.sh
-./deploy_mac.sh
+./server.sh start
 ```
+The server is now registered with `launchd` and will automatically start upon boot unattended.
 
-The deployment script will:
-- Set up the virtual environment
-- Install all dependencies
-- Create a macOS LaunchAgent service
-- Start the server automatically
-- Configure it to restart on boot
-
-**Service Management:**
-```bash
-# Stop service
-launchctl unload ~/Library/LaunchAgents/com.$USER.video_delay_server.plist
-
-# Start service
-launchctl load ~/Library/LaunchAgents/com.$USER.video_delay_server.plist
-
-# Check status
-launchctl list | grep video_delay_server
+### Step 5: Connect via Local Hostname (`.local`)
+Instead of tracking changing DHCP IP addresses, connect via your Mac's Bonjour hostname:
+```text
+http://<your-mac-name>.local:8000/static/player.html
 ```
+*(Check your hostname using `echo $(hostname)`).*
 
-**Remove Service:**
-```bash
-chmod +x remove_mac.sh
-./remove_mac.sh
-```
-
-## Usage
-
-### 1. API Server Mode (Recommended)
-
-Start the web-based control server:
-```bash
-python3 main.py --api
-```
-
-**Access Points:**
-- **Control Panel**: `http://localhost:8000`
-- **Full Page Player**: `http://localhost:8000/static/player.html`
-- **Video Gallery**: `http://localhost:8000/static/gallery.html`
-- **API Documentation**: `http://localhost:8000/docs`
-
-**From Network Devices (iPhone, iPad, etc.):**
-- Replace `localhost` with your Mac's IP address
-- Example: `http://192.168.1.100:8000/static/player.html`
-
-### 2. Headless Streaming
-
-Start streaming immediately without web interface:
-```bash
-python3 main.py --start
-```
-
-### 3. Interactive Mode
-
-Run with preview window and keyboard controls:
-```bash
-python3 main.py --window
-```
-
-**Keyboard Controls:**
-- `s`: Start Streaming
-- `p`: Pause/Resume
-- `q`: Quit
-
-## Web Control Panel
-
-The mobile-friendly control panel provides:
-
-### Status Dashboard
-- **Server Status**: Running/Stopped
-- **Streaming Status**: Active/Inactive/Paused
-- **Recording Status**: Recording/Not Recording
-- **Current Delay**: Shows configured delay time
-
-### Stream Controls
-- **Start/Stop Streaming**: Begin or end WebRTC transmission
-- **Pause/Resume**: Temporarily pause without stopping
-- **Live Player**: Embedded WebRTC video player — watch the delayed stream right in the control panel
-- **Open Full Page Player**: Opens `player.html` in a new tab — full viewport video, black background
-- **Snapshot Capture**: Take and view full resolution (1280×720) snapshots of the delayed stream
-- **Connection Status**: Real-time server connectivity indicator
-
-### Settings Management
-- **Delay Duration**: Adjust delay from 1-60 seconds
-- **Frame Rate**: Modify FPS (15-60)
-- **Apply & Restart**: Update settings with automatic restart
-
-### Video Gallery
-
-Separate page showing all recordings:
-- **Thumbnail Previews**: Visual preview of each recording
-- **File Information**: Size and creation date
-- **Click to Download**: Direct download or playback
-- **Statistics**: Total videos and storage used
-- **Auto-Refresh**: Updates every 5 seconds
+---
 
 ## API Reference
 
-### Status & Information
-- `GET /status` - Get current server status and settings
-- `GET /videos` - List all recorded videos with metadata
-- `GET /settings` - Get current configuration
+### Camera Discovery & Selection
+* `GET /cameras` - List detected video devices with friendly names and default flags
+* `POST /cameras/select` - Switch camera device dynamically (`{"index": 1}`)
 
-### Server Control
-- `POST /server/start` - Start the server process
-- `POST /server/stop` - Stop the server process
-- `POST /server/restart` - Restart with new settings (JSON body)
+### Server & Stream Controls
+* `GET /status` - Real-time telemetry (active camera, buffer %, estimated RAM, viewers count)
+* `POST /stream/start` - Begin WebRTC delay transmission and recording
+* `POST /stream/stop` - Stop streaming and recording
+* `POST /stream/pause` - Temporarily pause transmission
+* `POST /stream/resume` - Resume transmission
+* `POST /offer` - WebRTC SDP signaling endpoint
+* `GET /snapshot` - Capture full-resolution delayed JPEG snapshot
 
-### Stream Control
-- `POST /stream/start` - Start WebRTC streaming and recording
-- `POST /stream/stop` - Stop streaming and recording
-- `POST /stream/pause` - Pause transmission
-- `POST /stream/resume` - Resume transmission
-- `POST /offer` - WebRTC SDP offer/answer exchange (used by browser player)
-- `GET /snapshot` - Capture and return delayed frame as full resolution JPEG
+### Dynamic Settings
+* `GET /settings` - Get active configuration
+* `PATCH /settings` - Update delay seconds (1–120s) or overlays on the fly without server restart
 
-### Example API Usage
+### Video Gallery & Storage
+* `GET /videos` - List all recordings with metadata, duration, and thumbnail URLs
+* `DELETE /videos/{filename}` - Permanently delete an MP4 recording and its thumbnail
 
-```bash
-# Check status
-curl http://localhost:8000/status
-
-# Start streaming
-curl -X POST http://localhost:8000/stream/start
-
-# Update settings and restart
-curl -X POST http://localhost:8000/server/restart \
-  -H "Content-Type: application/json" \
-  -d '{
-    "delay_seconds": 15,
-    "fps": 30
-  }'
-
-# List recordings
-curl http://localhost:8000/videos
-
-# Capture snapshot
-curl http://localhost:8000/snapshot --output snapshot.jpg
-```
-
-## Configuration
-
-### Default Settings (src/config.py)
-```python
-DELAY_SECONDS = 5
-FPS = 30
-WIDTH = 1280
-HEIGHT = 720
-CAM_INDEX_PRIMARY = 0
-CAM_INDEX_SECONDARY = 1
-```
-
-### Dynamic Configuration
-Settings can be changed via:
-1. **Web Interface**: Use the Settings panel and click "Apply & Restart"
-2. **API**: Send JSON to `/server/restart` endpoint
-3. **Code**: Edit `src/config.py` (requires manual restart)
-
-## Logging
-
-All logs are stored in the `logs/` directory:
-
-- **logs/videoserver.log**: Application logs (INFO level)
-- **logs/videoserver_error.log**: Error logs (when deployed as service)
-
-**Log Format:**
-```
-2025-12-25 19:30:15 - src.stream - INFO - Camera initialized. Request: 1280x720 @ 30fps
-2025-12-25 19:30:16 - src.manager - INFO - Manager: Stream process started.
-```
-
-**View Logs:**
-```bash
-# Real-time monitoring
-tail -f logs/videoserver.log
-
-# View errors only
-grep ERROR logs/videoserver.log
-```
+---
 
 ## Project Structure
 
 ```
-videoserver/
-├── main.py                  # Application entry point
-├── requirements.txt         # Python dependencies
-├── deploy_mac.sh           # macOS deployment script
-├── remove_mac.sh           # macOS removal script
-├── README.md               # This file
-├── .gitignore              # Git ignore rules
+video-delay-server/
+├── server.sh                # Unified management CLI (start, stop, run, status, logs)
+├── deploy_mac.sh            # macOS deployment shortcut
+├── stop.sh                  # Stop service shortcut
+├── remove_mac.sh            # Service uninstallation shortcut
+├── main.py                  # Python application entrypoint
+├── requirements.txt         # Dependencies
 │
-├── recordings/             # Recorded video files (auto-created)
-├── thumbnails/             # Video thumbnails (auto-created)
-├── logs/                   # Application logs (auto-created)
+├── src/
+│   ├── cameras.py           # Hardware camera discovery & auto-default logic
+│   ├── network.py           # LAN IP resolution & URL formatting
+│   ├── qr_helper.py         # Terminal ASCII QR code generator
+│   ├── stream.py            # Video capture, delay buffer, H.264 recorder
+│   ├── webrtc.py            # Event-driven WebRTC broadcaster
+│   ├── manager.py           # Stream lifecycle & status aggregation
+│   ├── server.py            # FastAPI REST API & static routing
+│   ├── settings.py          # Pydantic configuration models
+│   ├── config.py            # Default system constants
+│   └── logger.py            # Rotating file and console logger
 │
-├── static/                 # Web interface files
-│   ├── index.html         # Control panel
-│   ├── player.html        # Full page WebRTC video player
-│   └── gallery.html       # Video gallery
+├── static/
+│   ├── index.html           # Web control panel with camera dropdown & telemetry
+│   ├── player.html          # Full-page WebRTC video player (iPhone/iPad optimized)
+│   └── gallery.html         # In-browser video replay gallery with modal player
 │
-└── src/                    # Source code
-    ├── __init__.py
-    ├── config.py          # Default configuration
-    ├── settings.py        # Pydantic settings model
-    ├── logger.py          # Logging configuration
-    ├── stream.py          # Video capture, delay buffer, recording
-    ├── webrtc.py          # WebRTC track and signaling
-    ├── manager.py         # Stream lifecycle management
-    └── server.py          # FastAPI server & endpoints
+├── tests/
+│   └── test_components.py   # Unit test suite
+├── recordings/              # Captured H.264 MP4 videos (auto-created)
+├── thumbnails/              # Replay thumbnails (auto-created)
+└── logs/                    # Application and error logs (auto-created)
 ```
 
-## Troubleshooting
-
-### Camera Access Issues
-**macOS**: Grant camera permissions in System Settings > Privacy & Security > Camera
-
-### iPhone/iPad Can't Connect
-The macOS firewall may be blocking port 8000. Allow it:
-```bash
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add $(which python3)
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp $(which python3)
-```
-Or run `deploy_mac.sh` — it handles this automatically.
-
-### Port Already in Use
-Change the port:
-```bash
-python3 main.py --api --port 8001
-```
-
-### Service Won't Start
-Check logs:
-```bash
-tail -f logs/videoserver.log
-```
-
-View service status:
-```bash
-launchctl list | grep video_delay_server
-```
-
-### Connection Issues
-- Verify firewall settings allow port 8000
-- Check that server is running: `launchctl list | grep video_delay_server`
-- Ensure you're using the correct IP address for network access
-
-## Development
-
-### Running Tests
-```bash
-# Test camera access
-python3 main.py --window
-
-# Test API server
-python3 main.py --api
-curl http://localhost:8000/status
-```
-
-### Adding Features
-The modular architecture makes it easy to extend:
-- **Stream processing**: Edit `src/stream.py`
-- **API endpoints**: Add to `src/server.py`
-- **Configuration**: Update `src/settings.py`
-- **Web UI**: Modify `static/index.html` or `static/gallery.html`
+---
 
 ## License
 
-[Your License Here]
-
-## Credits
-
-Built with:
-- [OpenCV](https://opencv.org/) - Video capture and processing
-- [aiortc](https://github.com/aiortc/aiortc) - WebRTC server implementation
-- [FastAPI](https://fastapi.tiangolo.com/) - Web framework
-- [Uvicorn](https://www.uvicorn.org/) - ASGI server
+MIT License. Built for sports coaches, video analysts, and live production teams.

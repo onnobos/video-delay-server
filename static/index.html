@@ -3,700 +3,656 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Delay Server Control</title>
+    <title>Video Delay Server 2.0</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --card-border: #334155;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
         }
 
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
             min-height: 100vh;
             padding: 20px;
-            color: #333;
         }
 
         .container {
-            max-width: 600px;
+            max-width: 720px;
             margin: 0 auto;
         }
 
-        .card {
-            background: white;
-            border-radius: 16px;
-            padding: 24px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
         }
 
         h1 {
-            color: #667eea;
-            margin-bottom: 8px;
-            font-size: 28px;
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #818cf8 0%, #c084fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
 
         .subtitle {
-            color: #666;
-            margin-bottom: 24px;
-            font-size: 14px;
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 2px;
         }
 
+        .badge-conn {
+            font-size: 12px;
+            padding: 6px 12px;
+            border-radius: 9999px;
+            font-weight: 600;
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .badge-conn.offline {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--danger);
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Status Grid */
         .status-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 12px;
-            margin-bottom: 24px;
+            margin-bottom: 16px;
+        }
+        @media (max-width: 600px) {
+            .status-grid { grid-template-columns: repeat(2, 1fr); }
         }
 
-        .status-item {
-            background: #f7f7f7;
-            padding: 16px;
+        .status-box {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(51, 65, 85, 0.5);
             border-radius: 12px;
+            padding: 12px;
             text-align: center;
         }
-
-        .status-label {
-            font-size: 12px;
-            color: #666;
+        .status-box .label {
+            font-size: 11px;
+            color: var(--text-muted);
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            margin-bottom: 8px;
+            margin-bottom: 4px;
+        }
+        .status-box .val {
+            font-size: 16px;
+            font-weight: 700;
+        }
+        .val.active { color: var(--success); }
+        .val.paused { color: var(--warning); }
+        .val.danger { color: var(--danger); }
+
+        /* Buffer Meter */
+        .meter-container {
+            margin-top: 12px;
+        }
+        .meter-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+        .meter-bar-bg {
+            height: 8px;
+            background: #0f172a;
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid var(--card-border);
+        }
+        .meter-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #6366f1, #10b981);
+            transition: width 0.3s ease;
         }
 
-        .status-value {
-            font-size: 18px;
-            font-weight: 600;
-            color: #333;
-        }
-
-        .status-value.active {
-            color: #10b981;
-        }
-
-        .status-value.inactive {
-            color: #ef4444;
-        }
-
-        .status-value.paused {
-            color: #f59e0b;
+        /* Buttons & Controls */
+        .btn-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
         }
 
         .btn {
-            width: 100%;
-            padding: 16px;
+            padding: 12px 16px;
+            border-radius: 10px;
             border: none;
-            border-radius: 12px;
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
-            margin-bottom: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            text-decoration: none;
+            color: white;
         }
-
-        .btn:active {
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+        .btn:active:not(:disabled) {
             transform: scale(0.98);
         }
 
-        .btn-primary {
-            background: #10b981;
-            color: white;
-        }
+        .btn-primary { background: var(--primary); }
+        .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 
-        .btn-primary:hover {
-            background: #059669;
-        }
+        .btn-danger { background: var(--danger); }
+        .btn-danger:hover:not(:disabled) { background: #dc2626; }
 
-        .btn-danger {
-            background: #ef4444;
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #dc2626;
-        }
-
-        .btn-warning {
-            background: #f59e0b;
-            color: white;
-        }
-
-        .btn-warning:hover {
-            background: #d97706;
-        }
+        .btn-warning { background: var(--warning); color: #000; }
+        .btn-warning:hover:not(:disabled) { background: #d97706; }
 
         .btn-secondary {
-            background: #6b7280;
-            color: white;
+            background: #334155;
+            color: var(--text-main);
         }
+        .btn-secondary:hover:not(:disabled) { background: #475569; }
 
-        .btn-secondary:hover {
-            background: #4b5563;
+        /* Video Player Wrapper */
+        .video-box {
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+            margin-bottom: 14px;
+            border: 1px solid var(--card-border);
         }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .settings-group {
-            margin-bottom: 20px;
-        }
-
-        .settings-group label {
-            display: block;
-            font-size: 14px;
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 8px;
-        }
-
-        .settings-group input {
+        .video-box video {
             width: 100%;
-            padding: 12px;
-            border: 2px solid #e5e7eb;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s ease;
+            height: 100%;
+            object-fit: contain;
+            display: block;
         }
-
-        .settings-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            font-size: 14px;
-        }
-
-        .alert-success {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .alert-error {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-
-        .alert-warning {
-            background: #fef3c7;
-            color: #92400e;
-        }
-
-        .connection-status {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 8px 16px;
-            border-radius: 20px;
+        .video-overlay-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.2);
+            padding: 6px 12px;
+            border-radius: 6px;
             font-size: 12px;
+            cursor: pointer;
+        }
+
+        /* Form elements */
+        .form-group {
+            margin-bottom: 14px;
+        }
+        label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
             font-weight: 600;
-            background: #10b981;
-            color: white;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
+            margin-bottom: 6px;
+        }
+        select, input[type="number"] {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0f172a;
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            color: var(--text-main);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        select:focus, input[type="number"]:focus {
+            border-color: var(--primary);
         }
 
-        .connection-status.disconnected {
-            background: #ef4444;
+        /* Toggle switches */
+        .toggle-group {
+            display: flex;
+            gap: 20px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+        .toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .toggle-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--primary);
+            cursor: pointer;
         }
 
-        .hidden {
+        /* Snapshot preview */
+        .snap-preview {
+            max-width: 100%;
+            border-radius: 8px;
+            margin-top: 12px;
+            border: 1px solid var(--card-border);
             display: none;
         }
 
-        .snapshot-container {
-            margin-top: 16px;
-            text-align: center;
-        }
-
-        .snapshot-image {
-            width: 100%;
-            max-width: 100%;
-            border-radius: 8px;
-            margin-top: 16px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .snapshot-placeholder {
-            background: #f7f7f7;
-            border: 2px dashed #ddd;
-            border-radius: 8px;
-            padding: 40px;
-            margin-top: 16px;
-            color: #999;
-            font-size: 14px;
-        }
-
-        .video-player {
-            width: 100%;
-            border-radius: 8px;
-            background: #000;
-            display: block;
-        }
-
-        .video-wrapper {
-            position: relative;
-        }
-
-        .btn-fullscreen {
-            position: absolute;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(0,0,0,0.6);
-            color: white;
-            border: none;
-            border-radius: 6px;
-            padding: 6px 10px;
-            font-size: 16px;
-            cursor: pointer;
-            opacity: 0;
-            transition: opacity 0.2s;
-        }
-
-        .video-wrapper:hover .btn-fullscreen {
-            opacity: 1;
-        }
-
-        .video-wrapper:-webkit-full-screen video,
-        .video-wrapper:fullscreen video {
-            width: 100vw;
-            height: 100vh;
-            border-radius: 0;
-        }
-
-        .hls-url-box {
-            background: #f7f7f7;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            padding: 10px 14px;
-            font-family: monospace;
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 10px;
             font-size: 13px;
-            color: #444;
-            word-break: break-all;
-            margin-top: 8px;
+            font-weight: 600;
+            color: #fff;
+            background: #334155;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+            z-index: 100;
         }
-
-        @media (max-width: 480px) {
-            .status-grid {
-                grid-template-columns: 1fr;
-            }
-        }
+        .toast.show { opacity: 1; }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
     </style>
 </head>
 <body>
-    <div class="connection-status" id="connectionStatus">● Connected</div>
     <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div>
+                <h1>Video Delay Server 2.0</h1>
+                <div class="subtitle">Apple Silicon Ultra-Low Overhead Live Replay</div>
+            </div>
+            <div id="connBadge" class="badge-conn">● Connected</div>
+        </div>
+
+        <!-- Telemetry & Status Grid -->
         <div class="card">
-            <h1>🎥 Video Delay Server</h1>
-            <p class="subtitle">Remote Control Panel</p>
-
-            <div id="alert" class="alert hidden"></div>
-
+            <div class="card-title">📡 Live Telemetry & Status</div>
             <div class="status-grid">
-                <div class="status-item">
-                    <div class="status-label">Server</div>
-                    <div class="status-value" id="serverStatus">Loading...</div>
+                <div class="status-box">
+                    <div class="label">Delay</div>
+                    <div class="val" id="statDelay">--</div>
                 </div>
-                <div class="status-item">
-                    <div class="status-label">Streaming</div>
-                    <div class="status-value" id="streamingStatus">Loading...</div>
+                <div class="status-box">
+                    <div class="label">Stream</div>
+                    <div class="val" id="statStream">--</div>
                 </div>
-                <div class="status-item">
-                    <div class="status-label">Delay</div>
-                    <div class="status-value" id="delayStatus">Loading...</div>
+                <div class="status-box">
+                    <div class="label">Viewers</div>
+                    <div class="val" id="statViewers">0</div>
+                </div>
+                <div class="status-box">
+                    <div class="label">Buffer RAM</div>
+                    <div class="val" id="statRam">0 MB</div>
+                </div>
+            </div>
+
+            <!-- Buffer fullness meter -->
+            <div class="meter-container">
+                <div class="meter-header">
+                    <span>Delay Buffer Fill State</span>
+                    <span id="meterText">0%</span>
+                </div>
+                <div class="meter-bar-bg">
+                    <div id="meterBar" class="meter-bar-fill"></div>
                 </div>
             </div>
         </div>
 
+        <!-- Stream Player & Quick Controls -->
         <div class="card">
-            <h2 style="margin-bottom: 16px; font-size: 20px;">Stream Controls</h2>
-            <button class="btn btn-primary" id="btnStartStream">▶️ Start Streaming</button>
-            <button class="btn btn-danger" id="btnStopStream">⏹️ Stop Streaming</button>
-            <button class="btn btn-warning" id="btnPauseStream">⏸️ Pause</button>
-            <button class="btn btn-warning" id="btnResumeStream">▶️ Resume</button>
-        </div>
-
-        <div class="card">
-            <h2 style="margin-bottom: 16px; font-size: 20px;">📡 Live Delayed Stream</h2>
-            <p style="color: #666; margin-bottom: 12px;">WebRTC stream — starts playing when streaming is active.</p>
-            <a href="/static/player.html" target="_blank" class="btn btn-secondary" style="display:inline-block; text-decoration:none; margin-bottom:12px;">🖥️ Open Full Page Player</a>
-            <div class="video-wrapper">
-                <video id="webrtcPlayer" class="video-player" autoplay muted playsinline></video>
-                <button class="btn-fullscreen" id="btnFullscreen" title="Fullscreen">⛶</button>
+            <div class="card-title" style="justify-content: space-between;">
+                <span>🖥️ Delayed Live Video</span>
+                <a href="/static/player.html" target="_blank" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">Fullscreen Player ↗</a>
             </div>
-            <p style="color: #666; font-size: 13px; margin-top: 10px;" id="webrtcStatus">Waiting for stream...</p>
+
+            <div class="video-box">
+                <video id="webrtcVideo" autoplay muted playsinline></video>
+                <button class="video-overlay-btn" id="btnSnap">📸 Snapshot</button>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn btn-primary" id="btnStart">▶️ Start Stream</button>
+                <button class="btn btn-warning" id="btnPause">⏸️ Pause</button>
+                <button class="btn btn-danger" id="btnStop">⏹️ Stop Stream</button>
+            </div>
+
+            <img id="snapImg" class="snap-preview" alt="Snapshot Preview">
         </div>
 
+        <!-- Camera Selection & Hardware Configuration -->
         <div class="card">
-            <h2 style="margin-bottom: 16px; font-size: 20px;">� Snapshot</h2>
-            <p style="color: #666; margin-bottom: 16px;">Capture the current frame from the camera.</p>
-            <button class="btn btn-secondary" id="btnSnapshot">📸 Take Snapshot</button>
-            <div class="snapshot-container">
-                <div id="snapshotPlaceholder" class="snapshot-placeholder">
-                    Click "Take Snapshot" to capture the current frame
+            <div class="card-title">📷 Camera Selection</div>
+            <div class="form-group">
+                <label for="cameraSelect">Active Video Input Device</label>
+                <select id="cameraSelect">
+                    <option value="" disabled selected>Detecting connected cameras...</option>
+                </select>
+            </div>
+
+            <div class="card-title" style="margin-top: 20px;">⚙️ Delay & Overlays</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="form-group">
+                    <label for="inputDelay">Delay (Seconds)</label>
+                    <input type="number" id="inputDelay" min="1" max="120" value="5">
                 </div>
-                <img id="snapshotImage" class="snapshot-image hidden" alt="Snapshot">
+                <div class="form-group">
+                    <label for="inputFps">Target FPS</label>
+                    <input type="number" id="inputFps" min="10" max="60" value="30">
+                </div>
+            </div>
+
+            <div class="toggle-group">
+                <label class="toggle-item">
+                    <input type="checkbox" id="chkTimestamp" checked>
+                    <span>Show Timestamp</span>
+                </label>
+                <label class="toggle-item">
+                    <input type="checkbox" id="chkFps" checked>
+                    <span>Show FPS</span>
+                </label>
+                <label class="toggle-item">
+                    <input type="checkbox" id="chkCamName">
+                    <span>Show Camera Name</span>
+                </label>
+            </div>
+
+            <div style="margin-top: 16px;">
+                <button class="btn btn-secondary" id="btnApplySettings" style="width: 100%;">💾 Apply Settings</button>
             </div>
         </div>
 
-        <div class="card">
-            <h2 style="margin-bottom: 16px; font-size: 20px;">Settings</h2>
-            
-            <div class="settings-group">
-                <label for="delaySeconds">Delay (seconds)</label>
-                <input type="number" id="delaySeconds" min="1" max="60" value="10">
+        <!-- Video Gallery Quick Link -->
+        <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <div style="font-weight: 600; font-size: 15px;">📹 Recorded Replay Gallery</div>
+                <div style="font-size: 13px; color: var(--text-muted);">View, download, and review captured MP4 files</div>
             </div>
-
-            <div class="settings-group">
-                <label for="fps">Frame Rate (FPS)</label>
-                <input type="number" id="fps" min="15" max="60" value="30">
-            </div>
-
-            <button class="btn btn-secondary" id="btnApplySettings">💾 Apply & Restart</button>
-        </div>
-
-        <div class="card">
-            <h2 style="margin-bottom: 16px; font-size: 20px;">📹 Recorded Videos</h2>
-            <p style="color: #666; margin-bottom: 16px;">View and download your recorded videos.</p>
-            <a href="/static/gallery.html" class="btn btn-primary" style="display: inline-block; text-decoration: none;">
-                View Video Gallery →
-            </a>
+            <a href="/static/gallery.html" class="btn btn-primary">Open Gallery →</a>
         </div>
     </div>
 
-    <script>
-        var API_BASE = window.location.origin;
-        var autoRefreshInterval = null;
-        var isConnected = true;
-        var retryCount = 0;
-        var MAX_RETRY_DELAY = 10000; // Max 10 seconds between retries
+    <div id="toast" class="toast"></div>
 
-        function updateConnectionStatus(connected) {
-            var statusEl = document.getElementById('connectionStatus');
-            if (connected && !isConnected) {
-                // Reconnected
-                statusEl.textContent = '● Connected';
-                statusEl.className = 'connection-status';
-                showAlert('Connection restored', 'success');
-                retryCount = 0;
-                startAutoRefresh();
-            } else if (!connected && isConnected) {
-                // Disconnected
-                statusEl.textContent = '● Disconnected';
-                statusEl.className = 'connection-status disconnected';
-                showAlert('Lost connection to server. Retrying...', 'warning');
-                stopAutoRefresh();
-                
-                // Update UI to show disconnected state
-                document.getElementById('serverStatus').textContent = 'Unable to Connect';
-                document.getElementById('serverStatus').className = 'status-value inactive';
-                document.getElementById('streamingStatus').textContent = 'Unknown';
-                document.getElementById('streamingStatus').className = 'status-value inactive';
-                document.getElementById('delayStatus').textContent = '--';
-                
-                // Disable all control buttons
-                document.getElementById('btnStartStream').disabled = true;
-                document.getElementById('btnStopStream').disabled = true;
-                document.getElementById('btnPauseStream').disabled = true;
-                document.getElementById('btnResumeStream').disabled = true;
-                document.getElementById('btnApplySettings').disabled = true;
-            }
-            isConnected = connected;
+    <script>
+        'use strict';
+        var API_BASE = window.location.origin;
+        var pc = null;
+        var isConnected = false;
+        var activeCameraIndex = null;
+
+        function showToast(msg, type) {
+            var t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast show ' + (type || '');
+            setTimeout(function() { t.className = 'toast'; }, 3000);
         }
 
-        function fetchStatus() {
-            fetch(API_BASE + '/status')
-                .then(function(response) {
-                    if (!response.ok) throw new Error('Server error');
-                    return response.json();
-                })
+        // --- CAMERA DISCOVERY & SELECTION ---
+        function loadCameras() {
+            fetch(API_BASE + '/cameras')
+                .then(function(res) { return res.json(); })
                 .then(function(data) {
-                    updateUI(data);
-                    updateConnectionStatus(true);
-                    retryCount = 0;
+                    var sel = document.getElementById('cameraSelect');
+                    sel.innerHTML = '';
+                    activeCameraIndex = data.active_index;
+
+                    data.cameras.forEach(function(cam) {
+                        var opt = document.createElement('option');
+                        opt.value = cam.index;
+                        var icon = cam.is_capture_card ? '🎮 ' : '📹 ';
+                        var suffix = cam.is_default ? ' (Default - Recommended)' : '';
+                        opt.textContent = icon + cam.name + suffix;
+                        if (cam.index === activeCameraIndex) {
+                            opt.selected = true;
+                        }
+                        sel.appendChild(opt);
+                    });
                 })
-                .catch(function(error) {
-                    updateConnectionStatus(false);
-                    retryCount++;
-                    var retryDelay = Math.min(1000 * Math.pow(2, retryCount), MAX_RETRY_DELAY);
-                    setTimeout(fetchStatus, retryDelay);
+                .catch(function(err) {
+                    console.error('Failed to load cameras:', err);
                 });
         }
 
-        function startAutoRefresh() {
-            if (autoRefreshInterval) return; // Already running
-            autoRefreshInterval = setInterval(fetchStatus, 2000);
-        }
-
-        function stopAutoRefresh() {
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshInterval = null;
-            }
-        }
-
-        var webrtcPc = null;
-        var wasStreaming = false;
-
-        function setWebrtcStatus(msg) {
-            document.getElementById('webrtcStatus').textContent = msg;
-        }
-
-        function stopWebRTC() {
-            if (webrtcPc) {
-                webrtcPc.close();
-                webrtcPc = null;
-            }
-            var video = document.getElementById('webrtcPlayer');
-            video.srcObject = null;
-            setWebrtcStatus('Stream stopped.');
-        }
-
-        function startWebRTC() {
-            if (webrtcPc) return;
-            setWebrtcStatus('Connecting...');
-
-            var pc = new RTCPeerConnection({
-                iceServers: []
+        document.getElementById('cameraSelect').addEventListener('change', function(e) {
+            var selectedIdx = parseInt(e.target.value);
+            showToast('Switching camera...', '');
+            fetch(API_BASE + '/cameras/select', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ index: selectedIdx })
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                showToast('Camera switched successfully!', 'success');
+                startWebRTC();
+            })
+            .catch(function(err) {
+                showToast('Failed to switch camera: ' + err, 'error');
             });
-            webrtcPc = pc;
+        });
 
-            pc.ontrack = function(event) {
-                var video = document.getElementById('webrtcPlayer');
-                if (event.streams && event.streams[0]) {
-                    video.srcObject = event.streams[0];
-                    var p = video.play();
-                    if (p && p.catch) { p.catch(function() {}); }
-                    setWebrtcStatus('Live — WebRTC');
-                }
-            };
+        // --- WEBRTC PLAYER ---
+        function startWebRTC() {
+            if (pc) {
+                try { pc.close(); } catch(e){}
+                pc = null;
+            }
 
-            pc.oniceconnectionstatechange = function() {
-                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                    setWebrtcStatus('Connection lost. Retrying...');
-                    stopWebRTC();
-                    wasStreaming = false;
-                }
-            };
+            pc = new RTCPeerConnection({
+                iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }]
+            });
 
             pc.addTransceiver('video', { direction: 'recvonly' });
 
-            pc.createOffer().then(function(offer) {
-                return pc.setLocalDescription(offer);
-            }).then(function() {
-                return new Promise(function(resolve) {
-                    if (pc.iceGatheringState === 'complete') {
-                        resolve();
-                    } else {
-                        pc.onicegatheringcomplete = resolve;
-                        pc.onicecandidate = function(e) {
-                            if (!e.candidate) resolve();
-                        };
-                        setTimeout(resolve, 2000);
-                    }
-                });
-            }).then(function() {
-                return fetch('/offer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        sdp: pc.localDescription.sdp,
-                        type: pc.localDescription.type
-                    })
-                });
-            }).then(function(resp) {
-                return resp.json();
-            }).then(function(answer) {
-                return pc.setRemoteDescription(new RTCSessionDescription(answer));
-            }).then(function() {
-                setWebrtcStatus('Negotiated — waiting for video...');
-            }).catch(function(err) {
-                setWebrtcStatus('Error: ' + err.message);
-                stopWebRTC();
-                wasStreaming = false;
-            });
-        }
-
-        function initWebRTCPlayer(streaming) {
-            if (!streaming) {
-                if (wasStreaming) { stopWebRTC(); }
-                wasStreaming = false;
-                return;
-            }
-            if (streaming && !wasStreaming) {
-                wasStreaming = true;
-                startWebRTC();
-            }
-        }
-
-        function updateUI(status) {
-            // API server is always running if we can fetch status
-            document.getElementById('serverStatus').textContent = 'Running';
-            document.getElementById('serverStatus').className = 'status-value active';
-
-            document.getElementById('streamingStatus').textContent = status.streaming ? 'Active' : 'Inactive';
-            document.getElementById('streamingStatus').className = 'status-value ' + (status.streaming ? 'active' : 'inactive');
-
-            if (status.paused) {
-                document.getElementById('streamingStatus').textContent = 'Paused';
-                document.getElementById('streamingStatus').className = 'status-value paused';
-            }
-
-            document.getElementById('delayStatus').textContent = status.settings.delay_seconds + 's';
-
-            // Only update form fields if they're not currently focused (being edited)
-            var delayInput = document.getElementById('delaySeconds');
-            var fpsInput = document.getElementById('fps');
-
-            if (document.activeElement !== delayInput) {
-                delayInput.value = status.settings.delay_seconds;
-            }
-            if (document.activeElement !== fpsInput) {
-                fpsInput.value = status.settings.fps;
-            }
-
-            // Update WebRTC player
-            initWebRTCPlayer(status.streaming && !status.paused);
-
-            // Update button states
-            var streaming = status.streaming;
-            var paused = status.paused;
-            
-            document.getElementById('btnStartStream').disabled = streaming;
-            document.getElementById('btnStopStream').disabled = !streaming;
-            document.getElementById('btnPauseStream').disabled = !streaming || paused;
-            document.getElementById('btnResumeStream').disabled = !streaming || !paused;
-        }
-
-        function showAlert(message, type) {
-            type = type || 'success';
-            var alertEl = document.getElementById('alert');
-            alertEl.textContent = message;
-            alertEl.className = 'alert alert-' + type;
-            setTimeout(function() {
-                alertEl.className = 'alert hidden';
-            }, 3000);
-        }
-
-        function apiCall(endpoint, method, body) {
-            method = method || 'POST';
-            body = body || null;
-            
-            if (!isConnected) {
-                showAlert('Server is disconnected. Please wait...', 'error');
-                return;
-            }
-
-            var options = {
-                method: method,
-                headers: body ? { 'Content-Type': 'application/json' } : {}
+            pc.ontrack = function(event) {
+                var el = document.getElementById('webrtcVideo');
+                el.srcObject = event.streams[0];
             };
-            if (body) options.body = JSON.stringify(body);
 
-            fetch(API_BASE + endpoint, options)
-                .then(function(response) {
-                    return response.json().then(function(data) {
-                        return { response: response, data: data };
+            pc.createOffer()
+                .then(function(offer) { return pc.setLocalDescription(offer); })
+                .then(function() {
+                    return fetch(API_BASE + '/offer', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            sdp: pc.localDescription.sdp,
+                            type: pc.localDescription.type
+                        })
                     });
                 })
-                .then(function(result) {
-                    if (result.response.ok) {
-                        showAlert(result.data.message || 'Success', 'success');
-                        fetchStatus();
-                    } else {
-                        showAlert(result.data.detail || 'Error occurred', 'error');
-                    }
+                .then(function(res) {
+                    if (!res.ok) throw new Error('WebRTC offer rejected');
+                    return res.json();
                 })
-                .catch(function(error) {
-                    updateConnectionStatus(false);
-                    showAlert('Network error', 'error');
+                .then(function(answer) {
+                    return pc.setRemoteDescription(new RTCSessionDescription(answer));
+                })
+                .catch(function(err) {
+                    console.warn('WebRTC startup notice:', err.message);
                 });
         }
 
-        document.getElementById('btnStartStream').addEventListener('click', function() {
-            apiCall('/stream/start');
+        // --- TELEMETRY & STATUS POLLING ---
+        function pollStatus() {
+            fetch(API_BASE + '/status')
+                .then(function(res) {
+                    if (!res.ok) throw new Error('Status error');
+                    return res.json();
+                })
+                .then(function(data) {
+                    setConnectionState(true);
+
+                    // Update grid
+                    var t = data.telemetry || {};
+                    document.getElementById('statDelay').textContent = data.settings.delay_seconds + 's';
+                    
+                    var stStream = document.getElementById('statStream');
+                    if (data.paused) {
+                        stStream.textContent = 'Paused';
+                        stStream.className = 'val paused';
+                    } else if (data.streaming) {
+                        stStream.textContent = t.signal_lost ? 'Waiting Signal' : 'Active';
+                        stStream.className = 'val ' + (t.signal_lost ? 'danger' : 'active');
+                    } else {
+                        stStream.textContent = 'Standby';
+                        stStream.className = 'val';
+                    }
+
+                    document.getElementById('statViewers').textContent = data.active_viewers || 0;
+                    document.getElementById('statRam').textContent = (t.estimated_ram_mb || 0) + ' MB';
+
+                    // Update meter
+                    var pct = t.buffer_percent || 0;
+                    document.getElementById('meterText').textContent = pct + '% (' + (t.buffer_length || 0) + ' / ' + (t.buffer_capacity || 0) + ' frames)';
+                    document.getElementById('meterBar').style.width = pct + '%';
+
+                    // Form updates if not focused
+                    var delayInput = document.getElementById('inputDelay');
+                    if (document.activeElement !== delayInput) {
+                        delayInput.value = data.settings.delay_seconds;
+                    }
+                    var fpsInput = document.getElementById('inputFps');
+                    if (document.activeElement !== fpsInput) {
+                        fpsInput.value = data.settings.fps;
+                    }
+
+                    document.getElementById('btnStart').disabled = data.streaming;
+                    document.getElementById('btnPause').disabled = !data.streaming;
+                    document.getElementById('btnStop').disabled = !data.streaming;
+                    document.getElementById('btnPause').textContent = data.paused ? '▶️ Resume' : '⏸️ Pause';
+
+                    // Check if WebRTC video has stalled
+                    var videoEl = document.getElementById('webrtcVideo');
+                    if (data.streaming && !videoEl.srcObject) {
+                        startWebRTC();
+                    }
+                })
+                .catch(function() {
+                    setConnectionState(false);
+                });
+        }
+
+        function setConnectionState(ok) {
+            isConnected = ok;
+            var badge = document.getElementById('connBadge');
+            if (ok) {
+                badge.textContent = '● Connected';
+                badge.className = 'badge-conn';
+            } else {
+                badge.textContent = '● Disconnected';
+                badge.className = 'badge-conn offline';
+            }
+        }
+
+        // --- BUTTON ACTIONS ---
+        document.getElementById('btnStart').addEventListener('click', function() {
+            fetch(API_BASE + '/stream/start', { method: 'POST' })
+                .then(function() {
+                    showToast('Streaming started', 'success');
+                    startWebRTC();
+                    pollStatus();
+                });
         });
 
-        document.getElementById('btnStopStream').addEventListener('click', function() {
-            apiCall('/stream/stop');
+        document.getElementById('btnPause').addEventListener('click', function() {
+            var isPaused = document.getElementById('statStream').textContent === 'Paused';
+            var endpoint = isPaused ? '/stream/resume' : '/stream/pause';
+            fetch(API_BASE + endpoint, { method: 'POST' }).then(pollStatus);
         });
 
-        document.getElementById('btnPauseStream').addEventListener('click', function() {
-            apiCall('/stream/pause');
+        document.getElementById('btnStop').addEventListener('click', function() {
+            fetch(API_BASE + '/stream/stop', { method: 'POST' })
+                .then(function() {
+                    showToast('Streaming stopped', 'warning');
+                    pollStatus();
+                });
         });
 
-        document.getElementById('btnResumeStream').addEventListener('click', function() {
-            apiCall('/stream/resume');
+        document.getElementById('btnSnap').addEventListener('click', function() {
+            var img = document.getElementById('snapImg');
+            img.src = API_BASE + '/snapshot?t=' + Date.now();
+            img.style.display = 'block';
+            showToast('Snapshot captured!', 'success');
         });
 
         document.getElementById('btnApplySettings').addEventListener('click', function() {
-            var settings = {
-                delay_seconds: parseInt(document.getElementById('delaySeconds').value),
-                fps: parseInt(document.getElementById('fps').value),
-                width: 1280,
-                height: 720,
-                cam_index_primary: 0,
-                cam_index_secondary: 1
+            var payload = {
+                delay_seconds: parseInt(document.getElementById('inputDelay').value),
+                show_timestamp: document.getElementById('chkTimestamp').checked,
+                show_fps: document.getElementById('chkFps').checked,
+                show_camera_name: document.getElementById('chkCamName').checked
             };
-            apiCall('/server/restart', 'POST', settings);
+
+            fetch(API_BASE + '/settings', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(function(res) { return res.json(); })
+            .then(function() {
+                showToast('Settings applied smoothly!', 'success');
+                pollStatus();
+            })
+            .catch(function(err) {
+                showToast('Error applying settings: ' + err, 'error');
+            });
         });
 
-        document.getElementById('btnSnapshot').addEventListener('click', function() {
-            if (!isConnected) {
-                showAlert('Server is disconnected. Please wait...', 'error');
-                return;
-            }
-
-            fetch(API_BASE + '/snapshot')
-                .then(function(response) {
-                    if (response.ok) {
-                        return response.blob();
-                    } else {
-                        return response.json().then(function(data) {
-                            throw new Error(data.detail || 'Failed to capture snapshot');
-                        });
-                    }
-                })
-                .then(function(blob) {
-                    var imageUrl = URL.createObjectURL(blob);
-                    var snapshotImage = document.getElementById('snapshotImage');
-                    var snapshotPlaceholder = document.getElementById('snapshotPlaceholder');
-                    
-                    // Revoke previous URL to prevent memory leak
-                    if (snapshotImage.src && snapshotImage.src.startsWith('blob:')) {
-                        URL.revokeObjectURL(snapshotImage.src);
-                    }
-                    
-                    snapshotImage.src = imageUrl;
-                    snapshotImage.classList.remove('hidden');
-                    snapshotPlaceholder.classList.add('hidden');
-                    
-                    showAlert('Snapshot captured successfully!', 'success');
-                })
-                .catch(function(error) {
-                    updateConnectionStatus(false);
-                    showAlert(error.message || 'Network error while capturing snapshot', 'error');
-                });
-        });
-
-        document.getElementById('btnFullscreen').addEventListener('click', function() {
-            var wrapper = document.getElementById('webrtcPlayer').parentElement;
-            var req = wrapper.requestFullscreen || wrapper.webkitRequestFullscreen || wrapper.mozRequestFullScreen;
-            if (req) { req.call(wrapper); }
-        });
-
-        // Initial fetch and start auto-refresh
-        fetchStatus();
-        startAutoRefresh();
+        // Initialize
+        loadCameras();
+        pollStatus();
+        setInterval(pollStatus, 2000);
+        setTimeout(startWebRTC, 1000);
     </script>
 </body>
 </html>

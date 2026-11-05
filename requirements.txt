@@ -3,3 +3,5 @@ fastapi
 uvicorn
 pydantic
 aiortc
+cv2-enumerate-cameras
+qrcode

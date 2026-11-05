@@ -3,209 +3,262 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Gallery - Video Delay Server</title>
+    <title>Video Gallery - Video Delay Server 2.0</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --danger: #ef4444;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --card-border: #334155;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
         }
 
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
             min-height: 100vh;
             padding: 20px;
-            color: #333;
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1000px;
             margin: 0 auto;
         }
 
         .header {
-            background: white;
-            border-radius: 16px;
-            padding: 24px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            margin-bottom: 24px;
             flex-wrap: wrap;
             gap: 16px;
         }
 
         h1 {
-            color: #667eea;
-            font-size: 28px;
-        }
-
-        .subtitle {
-            color: #666;
-            font-size: 14px;
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #818cf8 0%, #c084fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
 
         .btn {
-            padding: 12px 24px;
+            padding: 10px 18px;
+            border-radius: 10px;
             border: none;
-            border-radius: 12px;
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
             text-decoration: none;
-            display: inline-block;
-            background: #667eea;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
             color: white;
+            background: #334155;
         }
+        .btn:hover { background: #475569; }
+        .btn-primary { background: var(--primary); }
+        .btn-primary:hover { background: var(--primary-hover); }
+        .btn-danger { background: var(--danger); font-size: 12px; padding: 6px 12px; }
+        .btn-danger:hover { background: #dc2626; }
 
-        .btn:hover {
-            background: #5568d3;
-            transform: translateY(-2px);
-        }
-
-        .card {
-            background: white;
-            border-radius: 16px;
-            padding: 24px;
+        .stats-bar {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 14px 20px;
             margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            display: flex;
+            gap: 24px;
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+        .stats-val {
+            font-weight: 700;
+            color: var(--text-main);
+            margin-left: 6px;
         }
 
-        .video-gallery {
+        .video-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 16px;
-            margin-top: 16px;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 18px;
         }
 
         .video-card {
-            background: #f7f7f7;
-            border-radius: 12px;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
             transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .video-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.4);
+        }
+
+        .thumb-box {
+            position: relative;
+            aspect-ratio: 16/9;
+            background: #000;
             cursor: pointer;
         }
-
-        .video-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
-        }
-
-        .video-thumbnail {
+        .thumb-img {
             width: 100%;
-            height: 160px;
+            height: 100%;
             object-fit: cover;
-            background: #e5e7eb;
+            display: block;
+        }
+        .play-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .thumb-box:hover .play-overlay {
+            opacity: 1;
+        }
+        .play-icon {
+            width: 48px;
+            height: 48px;
+            background: rgba(79, 70, 229, 0.9);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: white;
         }
 
-        .video-info {
-            padding: 12px;
+        .card-body {
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            flex-grow: 1;
         }
 
-        .video-name {
+        .video-title {
             font-size: 14px;
             font-weight: 600;
-            color: #333;
-            margin-bottom: 4px;
+            color: var(--text-main);
             word-break: break-all;
         }
 
         .video-meta {
             font-size: 12px;
-            color: #666;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .card-actions {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid rgba(51, 65, 85, 0.5);
+            padding-top: 10px;
+            margin-top: auto;
+        }
+
+        /* Modal Player */
+        .modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 200;
+        }
+        .modal.open { display: flex; }
+        .modal-box {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 800px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.7);
+        }
+        .modal-header {
+            padding: 14px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .modal-title { font-weight: 600; font-size: 15px; }
+        .btn-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 22px;
+            cursor: pointer;
+        }
+        .btn-close:hover { color: #fff; }
+        .modal-video-box video {
+            width: 100%;
+            max-height: 70vh;
+            display: block;
+            background: #000;
         }
 
         .empty-state {
+            grid-column: 1 / -1;
             text-align: center;
-            padding: 40px 20px;
-            color: #999;
-        }
-
-        .connection-status {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            background: #10b981;
-            color: white;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-        }
-
-        .connection-status.disconnected {
-            background: #ef4444;
-        }
-
-        .stats {
-            display: flex;
-            gap: 24px;
-            margin-top: 16px;
-            padding-top: 16px;
-            border-top: 1px solid #e5e7eb;
-            font-size: 14px;
-            color: #666;
-        }
-
-        .stat-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .stat-value {
-            font-weight: 600;
-            color: #333;
-        }
-
-        @media (max-width: 480px) {
-            .video-gallery {
-                grid-template-columns: 1fr;
-            }
-
-            .header {
-                text-align: center;
-            }
-
-            .stats {
-                flex-direction: column;
-                gap: 8px;
-            }
+            padding: 60px 20px;
+            color: var(--text-muted);
+            font-size: 15px;
+            background: var(--card-bg);
+            border: 1px dashed var(--card-border);
+            border-radius: 14px;
         }
     </style>
 </head>
 <body>
-    <div class="connection-status" id="connectionStatus">● Connected</div>
     <div class="container">
         <div class="header">
             <div>
-                <h1>📹 Video Gallery</h1>
-                <p class="subtitle">Recorded Videos</p>
+                <h1>📹 Video Replay Gallery</h1>
+                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">High-Efficiency H.264 Captured Recordings</div>
             </div>
             <a href="/static/index.html" class="btn">← Back to Control Panel</a>
         </div>
 
-        <div class="card">
-            <div class="stats">
-                <div class="stat-item">
-                    <span>Total Videos:</span>
-                    <span class="stat-value" id="totalVideos">0</span>
-                </div>
-                <div class="stat-item">
-                    <span>Total Size:</span>
-                    <span class="stat-value" id="totalSize">0 MB</span>
-                </div>
-            </div>
+        <div class="stats-bar">
+            <div>Total Recordings: <span class="stats-val" id="statCount">0</span></div>
+            <div>Total Storage: <span class="stats-val" id="statStorage">0 MB</span></div>
         </div>
 
-        <div class="card">
-            <div id="videoGallery" class="video-gallery">
-                <div class="empty-state">Loading videos...</div>
+        <div class="video-grid" id="videoGrid">
+            <div class="empty-state">Loading recordings...</div>
+        </div>
+    </div>
+
+    <!-- In-Browser Video Player Modal -->
+    <div id="videoModal" class="modal">
+        <div class="modal-box">
+            <div class="modal-header">
+                <div id="modalTitle" class="modal-title">Replay</div>
+                <button class="btn-close" id="btnCloseModal">&times;</button>
+            </div>
+            <div class="modal-video-box">
+                <video id="modalPlayer" controls autoplay></video>
             </div>
         </div>
     </div>
@@ -213,108 +266,100 @@
     <script>
         'use strict';
         var API_BASE = window.location.origin;
-        var isConnected = true;
 
-        function updateConnectionStatus(connected) {
-            var statusEl = document.getElementById('connectionStatus');
-            if (connected && !isConnected) {
-                statusEl.textContent = '● Connected';
-                statusEl.className = 'connection-status';
-            } else if (!connected && isConnected) {
-                statusEl.textContent = '● Disconnected';
-                statusEl.className = 'connection-status disconnected';
-            }
-            isConnected = connected;
-        }
-
-        function formatFileSize(bytes) {
+        function formatBytes(bytes) {
             if (bytes === 0) return '0 Bytes';
             var k = 1024;
             var sizes = ['Bytes', 'KB', 'MB', 'GB'];
             var i = Math.floor(Math.log(bytes) / Math.log(k));
-            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+            return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
         }
 
-        function formatDate(isoString) {
-            var date = new Date(isoString);
-            return date.toLocaleString();
+        function formatDate(isoStr) {
+            var d = new Date(isoStr);
+            return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         }
 
-        function fetchVideos() {
+        function loadVideos() {
             fetch(API_BASE + '/videos')
-                .then(function(response) {
-                    if (!response.ok) throw new Error('Failed to fetch videos');
-                    return response.json();
-                })
+                .then(function(res) { return res.json(); })
                 .then(function(data) {
-                    displayVideos(data.videos);
-                    updateConnectionStatus(true);
+                    var grid = document.getElementById('videoGrid');
+                    grid.innerHTML = '';
+
+                    var totalBytes = data.videos.reduce(function(acc, v) { return acc + v.size; }, 0);
+                    document.getElementById('statCount').textContent = data.videos.length;
+                    document.getElementById('statStorage').textContent = formatBytes(totalBytes);
+
+                    if (data.videos.length === 0) {
+                        grid.innerHTML = '<div class="empty-state">No recordings yet. Turn on Streaming from the Control Panel to begin recording.</div>';
+                        return;
+                    }
+
+                    data.videos.forEach(function(video) {
+                        var card = document.createElement('div');
+                        card.className = 'video-card';
+
+                        var thumbHtml = '<div class="thumb-box" onclick="playModal(\'' + video.url + '\', \'' + video.name + '\')">' +
+                            '<img class="thumb-img" src="' + (video.thumbnail || '') + '" onerror="this.src=\'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22320%22 height=%22180%22%3E%3Crect fill=%22%231e293b%22 width=%22320%22 height=%22180%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 fill=%22%2394a3b8%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22 font-family=%22sans-serif%22%3ENo Preview%3C/text%3E%3C/svg%3E\'">' +
+                            '<div class="play-overlay"><div class="play-icon">▶</div></div>' +
+                        '</div>';
+
+                        var bodyHtml = '<div class="card-body">' +
+                            '<div class="video-title">' + video.name + '</div>' +
+                            '<div class="video-meta">' +
+                                '<span>' + formatBytes(video.size) + '</span>' +
+                                '<span>' + formatDate(video.created) + '</span>' +
+                            '</div>' +
+                            '<div class="card-actions">' +
+                                '<a href="' + video.url + '" download class="btn" style="padding: 6px 12px; font-size: 12px;">⬇️ Download</a>' +
+                                '<button class="btn btn-danger" onclick="deleteVideo(\'' + video.filename + '\')">🗑️ Delete</button>' +
+                            '</div>' +
+                        '</div>';
+
+                        card.innerHTML = thumbHtml + bodyHtml;
+                        grid.appendChild(card);
+                    });
                 })
-                .catch(function(error) {
-                    console.error('Error fetching videos:', error);
-                    updateConnectionStatus(false);
+                .catch(function(err) {
+                    console.error('Error fetching videos:', err);
                 });
         }
 
-        function displayVideos(videos) {
-            var gallery = document.getElementById('videoGallery');
-            
-            // Clear existing content to prevent memory leak
-            while (gallery.firstChild) {
-                gallery.removeChild(gallery.firstChild);
-            }
-            
-            // Update stats
-            var totalSize = videos.reduce(function(sum, video) { return sum + video.size; }, 0);
-            document.getElementById('totalVideos').textContent = videos.length;
-            document.getElementById('totalSize').textContent = formatFileSize(totalSize);
-            
-            if (videos.length === 0) {
-                var emptyDiv = document.createElement('div');
-                emptyDiv.className = 'empty-state';
-                emptyDiv.textContent = 'No recordings yet. Start streaming to create recordings.';
-                gallery.appendChild(emptyDiv);
-                return;
-            }
-
-            // Create video cards
-            videos.forEach(function(video) {
-                var card = document.createElement('div');
-                card.className = 'video-card';
-                card.onclick = function() { window.open(video.url, '_blank'); };
-                
-                var img = document.createElement('img');
-                img.src = video.thumbnail || '/static/placeholder.jpg';
-                img.alt = video.name;
-                img.className = 'video-thumbnail';
-                img.onerror = function() {
-                    this.src = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22320%22 height=%22180%22%3E%3Crect fill=%22%23e5e7eb%22 width=%22320%22 height=%22180%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-family=%22sans-serif%22 font-size=%2216%22 fill=%22%23999%22%3ENo Thumbnail%3C/text%3E%3C/svg%3E';
-                };
-                
-                var info = document.createElement('div');
-                info.className = 'video-info';
-                
-                var name = document.createElement('div');
-                name.className = 'video-name';
-                name.textContent = video.name;
-                
-                var meta = document.createElement('div');
-                meta.className = 'video-meta';
-                meta.textContent = formatFileSize(video.size) + ' • ' + formatDate(video.created);
-                
-                info.appendChild(name);
-                info.appendChild(meta);
-                card.appendChild(img);
-                card.appendChild(info);
-                gallery.appendChild(card);
-            });
+        function playModal(url, title) {
+            document.getElementById('modalTitle').textContent = title;
+            var player = document.getElementById('modalPlayer');
+            player.src = url;
+            player.play();
+            document.getElementById('videoModal').className = 'modal open';
         }
 
-        // Initial fetch
-        fetchVideos();
-        
-        // Auto-refresh every 5 seconds
-        setInterval(fetchVideos, 5000);
+        function closeModal() {
+            var player = document.getElementById('modalPlayer');
+            player.pause();
+            player.src = '';
+            document.getElementById('videoModal').className = 'modal';
+        }
+
+        document.getElementById('btnCloseModal').addEventListener('click', closeModal);
+        document.getElementById('videoModal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
+        function deleteVideo(filename) {
+            if (!confirm('Are you sure you want to permanently delete this recording?')) return;
+
+            fetch(API_BASE + '/videos/' + encodeURIComponent(filename), { method: 'DELETE' })
+                .then(function(res) {
+                    if (!res.ok) throw new Error('Delete failed');
+                    loadVideos();
+                })
+                .catch(function(err) {
+                    alert('Error deleting video: ' + err);
+                });
+        }
+
+        loadVideos();
     </script>
 </body>
 </html>
