@@ -1,5 +1,8 @@
 import os
 import glob
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -7,16 +10,38 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from src.config import BASE_DIR, RECORDINGS_DIR, THUMBNAILS_DIR
 from src.manager import StreamManager
 from src.settings import StreamSettings
 from src.logger import get_logger
-from src import webrtc, cameras
+from src import webrtc, cameras, diagnostics
 
 logger = get_logger(__name__)
 
-app = FastAPI(title="Video Delay Server API", version="2.0.0")
+
+class StatusEndpointFilter(logging.Filter):
+    """Suppress noisy 200 OK polling logs for GET /status."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not ("GET /status " in msg and " 200" in msg)
+
+
+manager = StreamManager()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, StatusEndpointFilter) for f in access_logger.filters):
+        access_logger.addFilter(StatusEndpointFilter())
+    yield
+    await webrtc.close_all()
+    manager.stop()
+
+
+app = FastAPI(title="Video Delay Server API", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,13 +50,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-manager = StreamManager()
-
 # Project directory paths
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
-THUMBNAILS_DIR = os.path.join(BASE_DIR, "thumbnails")
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
@@ -53,10 +73,15 @@ class CameraSelectRequest(BaseModel):
 
 
 class SettingsUpdateRequest(BaseModel):
-    delay_seconds: Optional[int] = None
+    delay_seconds: Optional[int] = Field(default=None, ge=1, le=120)
+    fps: Optional[int] = Field(default=None, ge=5, le=60)
     show_timestamp: Optional[bool] = None
     show_fps: Optional[bool] = None
     show_camera_name: Optional[bool] = None
+
+
+class TestPatternRequest(BaseModel):
+    enabled: bool
 
 
 @app.get("/")
@@ -65,10 +90,10 @@ def root():
     return RedirectResponse(url="/static/index.html")
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    await webrtc.close_all()
-    manager.stop()
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Return 204 No Content to eliminate browser favicon 404 log noise."""
+    return Response(status_code=204)
 
 
 # --- WEBRTC ---
@@ -76,9 +101,9 @@ async def shutdown_event():
 async def webrtc_offer(offer: WebRTCOffer):
     """Accept WebRTC offer from browser, return answer."""
     if not manager.is_running or not manager.stream:
-        # Auto-initialize stream if a player connects
-        manager.start()
-    answer = await webrtc.handle_offer(offer.sdp, offer.type, manager.stream)
+        # Auto-initialize stream off the event loop so camera init doesn't stall WebRTC
+        await asyncio.to_thread(manager.start)
+    answer = await webrtc.handle_offer(offer.sdp, offer.type, lambda: manager.stream)
     return answer
 
 
@@ -87,9 +112,15 @@ async def webrtc_offer(offer: WebRTCOffer):
 def get_cameras():
     """List all detected camera hardware with friendly names and default marker."""
     cams = cameras.list_available_cameras()
-    active_idx = manager.settings.active_camera_index
-    if active_idx is None and manager.stream:
+    if manager.stream is not None and manager.is_running:
         active_idx = manager.stream.camera_index
+    else:
+        active_idx = manager.settings.active_camera_index
+        if active_idx is None:
+            for c in cams:
+                if c.get("is_default"):
+                    active_idx = c["index"]
+                    break
 
     return {
         "cameras": cams,
@@ -183,6 +214,8 @@ def update_settings(req: SettingsUpdateRequest):
     """Dynamically update settings without restarting the camera hardware."""
     if req.delay_seconds is not None:
         manager.set_delay(req.delay_seconds)
+    if req.fps is not None:
+        manager.set_fps(req.fps)
     if req.show_timestamp is not None:
         manager.settings.show_timestamp = req.show_timestamp
     if req.show_fps is not None:
@@ -204,6 +237,63 @@ def get_snapshot():
         raise HTTPException(status_code=503, detail="No frame available. Camera may not be capturing.")
 
     return Response(content=snapshot_bytes, media_type="image/jpeg")
+
+
+# --- HEADLESS DIAGNOSTICS & SELF-HEALING ---
+@app.get("/diagnostics")
+def get_diagnostics():
+    """Run 6-point headless diagnostics (TCC permission, USB speed, frame health, storage)."""
+    return diagnostics.run_full_diagnostics(manager)
+
+
+@app.get("/logs")
+def get_server_logs(lines: int = 80):
+    """Return recent lines from application and error logs for mobile troubleshooting."""
+    return diagnostics.get_recent_logs(lines=lines)
+
+
+@app.post("/diagnostics/recover")
+def recover_hardware():
+    """Reset and re-discover camera hardware from remote browser."""
+    try:
+        status = manager.recover_hardware()
+        return {"message": "Camera hardware reset and re-initialized", "status": status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/diagnostics/test-pattern")
+def toggle_test_pattern(req: TestPatternRequest):
+    """Enable or disable synthetic moving test pattern to isolate WebRTC vs camera issues."""
+    status = manager.set_test_pattern(req.enabled)
+    return {
+        "message": f"Test pattern {'enabled' if req.enabled else 'disabled'}",
+        "status": status
+    }
+
+
+@app.post("/system/restart-mac")
+async def restart_mac():
+    """Gracefully flush recordings, close WebRTC peers, and restart macOS."""
+    await webrtc.close_all()
+    result = diagnostics.trigger_host_power_action("restart", manager)
+    return {
+        "message": "Gracefully stopping stream and restarting Mac...",
+        "action": "restart",
+        "result": result,
+    }
+
+
+@app.post("/system/shutdown-mac")
+async def shutdown_mac():
+    """Gracefully flush recordings, close WebRTC peers, and shut down macOS."""
+    await webrtc.close_all()
+    result = diagnostics.trigger_host_power_action("shutdown", manager)
+    return {
+        "message": "Gracefully stopping stream and shutting down Mac...",
+        "action": "shutdown",
+        "result": result,
+    }
 
 
 # --- RECORDINGS GALLERY ---

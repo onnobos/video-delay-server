@@ -300,6 +300,99 @@
         .toast.show { opacity: 1; }
         .toast.success { background: var(--success); }
         .toast.error { background: var(--danger); }
+
+        /* Diagnostics & Alert Banner */
+        .diag-banner {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            margin-bottom: 14px;
+            font-size: 13px;
+            background: rgba(245, 158, 11, 0.14);
+            border: 1px solid rgba(245, 158, 11, 0.45);
+            color: #fde68a;
+        }
+        .diag-banner.show { display: flex; flex-wrap: wrap; }
+        .diag-banner.error {
+            background: rgba(239, 68, 68, 0.16);
+            border-color: rgba(239, 68, 68, 0.5);
+            color: #fecaca;
+        }
+        .diag-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+        .diag-item {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 13px;
+        }
+        .diag-item-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .pill {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+        .pill-ok { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+        .pill-warning { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+        .pill-error { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+        .diag-rem { color: #fde68a; margin-top: 6px; font-size: 12px; }
+        .log-box {
+            display: none;
+            margin-top: 14px;
+            background: #020617;
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            padding: 12px;
+        }
+        .log-box.show { display: block; }
+        .log-pre {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.45;
+            color: #cbd5e1;
+            max-height: 220px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .power-section {
+            margin-top: 16px;
+            padding-top: 14px;
+            border-top: 1px solid var(--card-border);
+        }
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(2, 6, 23, 0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 250;
+        }
+        .modal-backdrop.open { display: flex; }
+        .modal-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            max-width: 420px;
+            width: 100%;
+            padding: 22px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+        }
+        .modal-card h3 { font-size: 17px; margin-bottom: 10px; }
+        .modal-card p { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 18px; }
     </style>
 </head>
 <body>
@@ -352,6 +445,11 @@
             <div class="card-title" style="justify-content: space-between;">
                 <span>🖥️ Delayed Live Video</span>
                 <a href="/static/player.html" target="_blank" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">Fullscreen Player ↗</a>
+            </div>
+
+            <div id="diagBanner" class="diag-banner">
+                <span id="diagBannerText">Signal notice</span>
+                <button class="btn btn-secondary" id="btnBannerRecover" style="padding: 6px 12px; font-size: 12px;">🔄 Reset Camera</button>
             </div>
 
             <div class="video-box">
@@ -410,6 +508,33 @@
             </div>
         </div>
 
+        <!-- Headless Troubleshooting & Diagnostics -->
+        <div class="card">
+            <div class="card-title">🩺 Headless Troubleshooting &amp; Diagnostics</div>
+            <div class="btn-row">
+                <button class="btn btn-primary" id="btnRunDiag">🩺 Run Health Check</button>
+                <button class="btn btn-warning" id="btnRecoverCam">🔄 Reset Camera Hardware</button>
+                <button class="btn btn-secondary" id="btnTestPattern">🧪 Enable Test Pattern</button>
+                <button class="btn btn-secondary" id="btnToggleLogs">📜 View Server Logs</button>
+            </div>
+            <div id="diagResults" class="diag-list"></div>
+            <div id="logViewerBox" class="log-box">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Recent Server &amp; Error Logs</span>
+                    <button class="btn btn-secondary" id="btnRefreshLogs" style="padding: 4px 10px; font-size: 11px;">↻ Refresh</button>
+                </div>
+                <pre id="logPre" class="log-pre">Click View Server Logs to load...</pre>
+            </div>
+
+            <div class="power-section">
+                <div style="font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 10px;">🔌 Mac Power Control (Headless Host)</div>
+                <div class="btn-row" style="margin-bottom: 0;">
+                    <button class="btn btn-warning" id="btnRestartMac">🔁 Restart Mac</button>
+                    <button class="btn btn-danger" id="btnShutdownMac">⏻ Shut Down Mac</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Video Gallery Quick Link -->
         <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
             <div>
@@ -422,12 +547,29 @@
 
     <div id="toast" class="toast"></div>
 
+    <!-- Mac Power Confirmation Modal -->
+    <div id="powerModal" class="modal-backdrop">
+        <div class="modal-card">
+            <h3 id="powerModalTitle">Confirm System Action</h3>
+            <p id="powerModalDesc"></p>
+            <div class="btn-row" style="margin-bottom: 0;">
+                <button class="btn btn-secondary" id="btnCancelPower">Cancel</button>
+                <button class="btn btn-danger" id="btnConfirmPower">Confirm</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         'use strict';
         var API_BASE = window.location.origin;
         var pc = null;
         var isConnected = false;
         var activeCameraIndex = null;
+        var webrtcConnecting = false;
+        var overlaysInitialized = false;
+        var pendingPowerAction = null;
+        var waitingForReboot = false;
+        var powerNoticeMessage = '';
 
         function showToast(msg, type) {
             var t = document.getElementById('toast');
@@ -473,7 +615,7 @@
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 showToast('Camera switched successfully!', 'success');
-                startWebRTC();
+                startWebRTC(true);
             })
             .catch(function(err) {
                 showToast('Failed to switch camera: ' + err, 'error');
@@ -481,15 +623,19 @@
         });
 
         // --- WEBRTC PLAYER ---
-        function startWebRTC() {
+        function startWebRTC(force) {
+            if (webrtcConnecting && !force) {
+                return;
+            }
+            webrtcConnecting = true;
+
             if (pc) {
                 try { pc.close(); } catch(e){}
                 pc = null;
             }
 
-            pc = new RTCPeerConnection({
-                iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }]
-            });
+            pc = new RTCPeerConnection({ iceServers: [] });
+            var currentPc = pc;
 
             pc.addTransceiver('video', { direction: 'recvonly' });
 
@@ -498,15 +644,37 @@
                 el.srcObject = event.streams[0];
             };
 
+            pc.onconnectionstatechange = function() {
+                if (currentPc.connectionState === 'connected' ||
+                    currentPc.connectionState === 'failed' ||
+                    currentPc.connectionState === 'closed') {
+                    if (pc === currentPc) {
+                        webrtcConnecting = false;
+                    }
+                }
+            };
+
             pc.createOffer()
-                .then(function(offer) { return pc.setLocalDescription(offer); })
+                .then(function(offer) { return currentPc.setLocalDescription(offer); })
+                .then(function() {
+                    return new Promise(function(resolve) {
+                        if (currentPc.iceGatheringState === 'complete') {
+                            resolve();
+                        } else {
+                            currentPc.onicecandidate = function(e) {
+                                if (!e.candidate) resolve();
+                            };
+                            setTimeout(resolve, 2000);
+                        }
+                    });
+                })
                 .then(function() {
                     return fetch(API_BASE + '/offer', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            sdp: pc.localDescription.sdp,
-                            type: pc.localDescription.type
+                            sdp: currentPc.localDescription.sdp,
+                            type: currentPc.localDescription.type
                         })
                     });
                 })
@@ -515,9 +683,13 @@
                     return res.json();
                 })
                 .then(function(answer) {
-                    return pc.setRemoteDescription(new RTCSessionDescription(answer));
+                    return currentPc.setRemoteDescription(new RTCSessionDescription(answer));
+                })
+                .then(function() {
+                    if (pc === currentPc) webrtcConnecting = false;
                 })
                 .catch(function(err) {
+                    if (pc === currentPc) webrtcConnecting = false;
                     console.warn('WebRTC startup notice:', err.message);
                 });
         }
@@ -530,6 +702,13 @@
                     return res.json();
                 })
                 .then(function(data) {
+                    if (waitingForReboot) {
+                        waitingForReboot = false;
+                        powerNoticeMessage = '';
+                        showToast('Mac is back online!', 'success');
+                        loadCameras();
+                        startWebRTC(true);
+                    }
                     setConnectionState(true);
 
                     // Update grid
@@ -537,15 +716,46 @@
                     document.getElementById('statDelay').textContent = data.settings.delay_seconds + 's';
                     
                     var stStream = document.getElementById('statStream');
+                    var health = t.frame_health || 'healthy';
                     if (data.paused) {
                         stStream.textContent = 'Paused';
                         stStream.className = 'val paused';
+                    } else if (health === 'test_pattern') {
+                        stStream.textContent = 'Test Pattern';
+                        stStream.className = 'val paused';
                     } else if (data.streaming) {
-                        stStream.textContent = t.signal_lost ? 'Waiting Signal' : 'Active';
-                        stStream.className = 'val ' + (t.signal_lost ? 'danger' : 'active');
+                        if (health === 'black_frame') {
+                            stStream.textContent = 'Black Frame';
+                            stStream.className = 'val danger';
+                        } else if (health === 'frozen_frame') {
+                            stStream.textContent = 'Frozen';
+                            stStream.className = 'val danger';
+                        } else {
+                            stStream.textContent = t.signal_lost ? 'Waiting Signal' : 'Active';
+                            stStream.className = 'val ' + (t.signal_lost ? 'danger' : 'active');
+                        }
                     } else {
                         stStream.textContent = 'Standby';
                         stStream.className = 'val';
+                    }
+
+                    // Update live diagnostic alert banner
+                    var banner = document.getElementById('diagBanner');
+                    var bannerText = document.getElementById('diagBannerText');
+                    if (powerNoticeMessage) {
+                        bannerText.textContent = powerNoticeMessage;
+                        banner.className = 'diag-banner show';
+                    } else if (data.process_running && health && health !== 'healthy' && health !== 'stopped') {
+                        bannerText.textContent = (t.diagnostic_hint || ('Stream status: ' + health));
+                        banner.className = 'diag-banner show' + (health === 'test_pattern' ? '' : ' error');
+                    } else {
+                        banner.className = 'diag-banner';
+                    }
+
+                    var tpBtn = document.getElementById('btnTestPattern');
+                    if (tpBtn) {
+                        tpBtn.dataset.enabled = t.test_pattern ? '1' : '0';
+                        tpBtn.textContent = t.test_pattern ? '🧪 Disable Test Pattern' : '🧪 Enable Test Pattern';
                     }
 
                     document.getElementById('statViewers').textContent = data.active_viewers || 0;
@@ -565,16 +775,23 @@
                     if (document.activeElement !== fpsInput) {
                         fpsInput.value = data.settings.fps;
                     }
+                    if (!overlaysInitialized && data.settings) {
+                        document.getElementById('chkTimestamp').checked = !!data.settings.show_timestamp;
+                        document.getElementById('chkFps').checked = !!data.settings.show_fps;
+                        document.getElementById('chkCamName').checked = !!data.settings.show_camera_name;
+                        overlaysInitialized = true;
+                    }
 
                     document.getElementById('btnStart').disabled = data.streaming;
                     document.getElementById('btnPause').disabled = !data.streaming;
                     document.getElementById('btnStop').disabled = !data.streaming;
                     document.getElementById('btnPause').textContent = data.paused ? '▶️ Resume' : '⏸️ Pause';
 
-                    // Check if WebRTC video has stalled
+                    // Reconnect WebRTC only if inactive and not already connecting
                     var videoEl = document.getElementById('webrtcVideo');
-                    if (data.streaming && !videoEl.srcObject) {
-                        startWebRTC();
+                    var pcInactive = !pc || pc.connectionState === 'failed' || pc.connectionState === 'closed';
+                    if ((data.process_running || data.streaming) && !videoEl.srcObject && pcInactive && !webrtcConnecting) {
+                        startWebRTC(false);
                     }
                 })
                 .catch(function() {
@@ -599,7 +816,7 @@
             fetch(API_BASE + '/stream/start', { method: 'POST' })
                 .then(function() {
                     showToast('Streaming started', 'success');
-                    startWebRTC();
+                    startWebRTC(true);
                     pollStatus();
                 });
         });
@@ -627,7 +844,8 @@
 
         document.getElementById('btnApplySettings').addEventListener('click', function() {
             var payload = {
-                delay_seconds: parseInt(document.getElementById('inputDelay').value),
+                delay_seconds: parseInt(document.getElementById('inputDelay').value, 10),
+                fps: parseInt(document.getElementById('inputFps').value, 10),
                 show_timestamp: document.getElementById('chkTimestamp').checked,
                 show_fps: document.getElementById('chkFps').checked,
                 show_camera_name: document.getElementById('chkCamName').checked
@@ -648,11 +866,181 @@
             });
         });
 
+        // --- HEADLESS TROUBLESHOOTING & LOGS ---
+        function renderDiagnostics(report) {
+            var container = document.getElementById('diagResults');
+            container.innerHTML = '';
+            (report.checks || []).forEach(function(chk) {
+                var item = document.createElement('div');
+                item.className = 'diag-item';
+
+                var head = document.createElement('div');
+                head.className = 'diag-item-head';
+                var titleSpan = document.createElement('span');
+                titleSpan.textContent = chk.title;
+                var pill = document.createElement('span');
+                pill.className = 'pill pill-' + (chk.status || 'warning');
+                pill.textContent = chk.status || 'info';
+                head.appendChild(titleSpan);
+                head.appendChild(pill);
+
+                var detail = document.createElement('div');
+                detail.style.color = '#cbd5e1';
+                detail.textContent = chk.detail || '';
+
+                item.appendChild(head);
+                item.appendChild(detail);
+
+                if (chk.remediation) {
+                    var rem = document.createElement('div');
+                    rem.className = 'diag-rem';
+                    rem.textContent = 'Fix: ' + chk.remediation;
+                    item.appendChild(rem);
+                }
+                container.appendChild(item);
+            });
+        }
+
+        function runDiagnostics() {
+            showToast('Running 6-point diagnostics...', '');
+            fetch(API_BASE + '/diagnostics')
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    renderDiagnostics(data);
+                    showToast('Diagnostics complete: ' + (data.overall_status || 'ok').toUpperCase(),
+                              data.overall_status === 'error' ? 'error' : 'success');
+                })
+                .catch(function(err) {
+                    showToast('Diagnostics error: ' + err, 'error');
+                });
+        }
+
+        function recoverHardware() {
+            showToast('Resetting camera hardware...', '');
+            fetch(API_BASE + '/diagnostics/recover', { method: 'POST' })
+                .then(function(res) { return res.json(); })
+                .then(function() {
+                    showToast('Camera hardware reset complete!', 'success');
+                    loadCameras();
+                    startWebRTC(true);
+                    pollStatus();
+                })
+                .catch(function(err) {
+                    showToast('Hardware reset failed: ' + err, 'error');
+                });
+        }
+
+        function loadServerLogs() {
+            fetch(API_BASE + '/logs?lines=80')
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    var errLines = (data.error_log || []).join('\n');
+                    var appLines = (data.app_log || []).join('\n');
+                    document.getElementById('logPre').textContent =
+                        '=== ERROR LOG ===\n' + (errLines || '(empty)') +
+                        '\n\n=== APP LOG ===\n' + (appLines || '(empty)');
+                })
+                .catch(function(err) {
+                    document.getElementById('logPre').textContent = 'Failed to load logs: ' + err;
+                });
+        }
+
+        document.getElementById('btnRunDiag').addEventListener('click', runDiagnostics);
+        document.getElementById('btnRecoverCam').addEventListener('click', recoverHardware);
+        document.getElementById('btnBannerRecover').addEventListener('click', recoverHardware);
+        document.getElementById('btnTestPattern').addEventListener('click', function() {
+            var currentlyOn = this.dataset.enabled === '1';
+            fetch(API_BASE + '/diagnostics/test-pattern', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: !currentlyOn })
+            })
+            .then(function(res) { return res.json(); })
+            .then(function() {
+                showToast(!currentlyOn ? 'Test pattern enabled' : 'Test pattern disabled', 'success');
+                startWebRTC(true);
+                pollStatus();
+            })
+            .catch(function(err) {
+                showToast('Test pattern error: ' + err, 'error');
+            });
+        });
+        document.getElementById('btnToggleLogs').addEventListener('click', function() {
+            var box = document.getElementById('logViewerBox');
+            box.classList.toggle('show');
+            if (box.classList.contains('show')) {
+                loadServerLogs();
+            }
+        });
+        document.getElementById('btnRefreshLogs').addEventListener('click', loadServerLogs);
+
+        // --- MAC POWER CONTROL ---
+        function openPowerModal(action) {
+            pendingPowerAction = action;
+            var title = document.getElementById('powerModalTitle');
+            var desc = document.getElementById('powerModalDesc');
+            var confirmBtn = document.getElementById('btnConfirmPower');
+
+            if (action === 'restart') {
+                title.textContent = '🔁 Restart Headless Mac?';
+                desc.textContent = 'Any active recording will be saved and closed cleanly before macOS restarts. The stream will pause for ~45 seconds and reconnect automatically.';
+                confirmBtn.className = 'btn btn-warning';
+                confirmBtn.textContent = 'Yes, Restart Mac';
+            } else {
+                title.textContent = '⏻ Shut Down Headless Mac?';
+                desc.textContent = 'Any active recording will be saved and closed cleanly before macOS shuts down. Warning: you will need to press the Mac power button physically to turn it back on.';
+                confirmBtn.className = 'btn btn-danger';
+                confirmBtn.textContent = 'Yes, Shut Down';
+            }
+            document.getElementById('powerModal').className = 'modal-backdrop open';
+        }
+
+        function closePowerModal() {
+            pendingPowerAction = null;
+            document.getElementById('powerModal').className = 'modal-backdrop';
+        }
+
+        document.getElementById('btnRestartMac').addEventListener('click', function() { openPowerModal('restart'); });
+        document.getElementById('btnShutdownMac').addEventListener('click', function() { openPowerModal('shutdown'); });
+        document.getElementById('btnCancelPower').addEventListener('click', closePowerModal);
+        document.getElementById('powerModal').addEventListener('click', function(e) {
+            if (e.target === this) closePowerModal();
+        });
+
+        document.getElementById('btnConfirmPower').addEventListener('click', function() {
+            var action = pendingPowerAction;
+            closePowerModal();
+            if (!action) return;
+
+            var endpoint = action === 'restart' ? '/system/restart-mac' : '/system/shutdown-mac';
+            fetch(API_BASE + endpoint, { method: 'POST' })
+                .then(function(res) {
+                    if (!res.ok) throw new Error('Request failed');
+                    return res.json();
+                })
+                .then(function() {
+                    if (action === 'restart') {
+                        waitingForReboot = true;
+                        powerNoticeMessage = '🔁 Mac is restarting... Active recordings saved. This page will reconnect automatically when the Mac boots back up.';
+                        showToast('Mac restart initiated!', 'warning');
+                    } else {
+                        powerNoticeMessage = '⏻ Mac is shutting down safely. Active recordings have been saved.';
+                        showToast('Mac shutdown initiated!', 'warning');
+                    }
+                    var banner = document.getElementById('diagBanner');
+                    document.getElementById('diagBannerText').textContent = powerNoticeMessage;
+                    banner.className = 'diag-banner show';
+                })
+                .catch(function(err) {
+                    showToast('Power command error: ' + err.message, 'error');
+                });
+        });
+
         // Initialize
         loadCameras();
         pollStatus();
         setInterval(pollStatus, 2000);
-        setTimeout(startWebRTC, 1000);
+        startWebRTC(false);
     </script>
 </body>
 </html>

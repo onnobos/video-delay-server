@@ -2,9 +2,10 @@ import asyncio
 import fractions
 import time
 import cv2
-from typing import Optional
+from typing import Any, Callable, Optional, Union
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc.mediastreams import MediaStreamError
 from av import VideoFrame
 
 from src.logger import get_logger
@@ -21,36 +22,67 @@ pcs: set[RTCPeerConnection] = set()
 class VideoDelayTrack(VideoStreamTrack):
     """
     An optimized aiortc VideoStreamTrack delivering frames from VideoDelayStream
-    with precise PTS timing and frame sequence tracking.
+    with precise PTS timing, pause frame-hold, and dynamic stream rebinding.
     """
     kind = "video"
 
-    def __init__(self, stream):
+    def __init__(self, stream_or_provider: Union[Any, Callable[[], Optional[Any]]]):
         super().__init__()
-        self._stream = stream
+        self._get_stream: Callable[[], Optional[Any]] = (
+            stream_or_provider if callable(stream_or_provider) else (lambda: stream_or_provider)
+        )
         self._pts = 0
         self._last_seq = -1
+        self._last_stream_id: Optional[int] = None
+        self._last_frame_bgr: Optional[Any] = None
         self._start_time: Optional[float] = None
 
     async def recv(self) -> VideoFrame:
-        fps = max(1.0, float(self._stream.actual_fps))
-        frame_interval = 1.0 / fps
-        frame_pts_step = int(VIDEO_CLOCK_RATE / fps)
+        if self.readyState != "live":
+            raise MediaStreamError
 
         if self._start_time is None:
             self._start_time = time.monotonic()
 
-        # Wait until a fresh delayed frame is available
+        frame_bgr = None
+        fps = 30.0
+        frame_pts_step = int(VIDEO_CLOCK_RATE / fps)
+
+        # Wait until a fresh delayed frame (or paused frozen frame) is available
         while True:
-            # Check if new sequence frame arrived
-            current_seq = self._stream.frame_seq
-            if current_seq != self._last_seq and self._stream.delayed_frame is not None:
+            if self.readyState != "live":
+                raise MediaStreamError
+
+            stream = self._get_stream()
+            if stream is None or not getattr(stream, "running", False):
+                await asyncio.sleep(0.02)
+                continue
+
+            fps = max(1.0, float(getattr(stream, "actual_fps", 30.0)))
+            frame_interval = 1.0 / fps
+            frame_pts_step = int(VIDEO_CLOCK_RATE / fps)
+
+            # Rebind seamlessly if StreamManager restarted/replaced the stream
+            stream_id = id(stream)
+            if stream_id != self._last_stream_id:
+                self._last_stream_id = stream_id
+                self._last_seq = -1
+
+            # Emit frozen frame at low keepalive rate when paused
+            if getattr(stream, "paused", False) and self._last_frame_bgr is not None:
+                await asyncio.sleep(max(frame_interval, 0.1))
+                frame_bgr = self._last_frame_bgr
+                break
+
+            current_seq = stream.frame_seq
+            if current_seq != self._last_seq and stream.delayed_frame is not None:
                 self._last_seq = current_seq
-                frame_bgr = self._stream.get_delayed_frame()
-                if frame_bgr is not None:
+                candidate = stream.get_delayed_frame()
+                if candidate is not None:
+                    self._last_frame_bgr = candidate
+                    frame_bgr = candidate
                     break
 
-            # If stream is stopped or buffer filling up, yield control briefly
             await asyncio.sleep(min(0.005, frame_interval / 4))
 
         # Convert BGR -> RGB for av VideoFrame
@@ -63,7 +95,13 @@ class VideoDelayTrack(VideoStreamTrack):
         return av_frame
 
 
-async def handle_offer(sdp: str, sdp_type: str, stream) -> dict:
+async def handle_offer(
+    sdp: str,
+    sdp_type: str,
+    stream_or_provider: Union[Any, Callable[[], Optional[Any]]],
+    connect_timeout: float = 15.0,
+    disconnect_grace: float = 5.0,
+) -> dict:
     """
     Process WebRTC offer from browser, attach the delay video track,
     and return answer SDP.
@@ -74,15 +112,56 @@ async def handle_offer(sdp: str, sdp_type: str, stream) -> dict:
 
     logger.info(f"WebRTC: New offer received. Active peers: {len(pcs)}")
 
+    bg_tasks: set[asyncio.Task] = set()
+
+    async def _cleanup_pc(reason: str):
+        if pc in pcs:
+            pcs.discard(pc)
+            try:
+                await pc.close()
+            except Exception:
+                pass
+            logger.info(f"WebRTC peer closed ({reason}). Remaining peers: {len(pcs)}")
+        for task in list(bg_tasks):
+            if not task.done() and task is not asyncio.current_task():
+                task.cancel()
+
+    async def _disconnect_watchdog():
+        try:
+            await asyncio.sleep(disconnect_grace)
+            if pc in pcs and pc.connectionState in ("disconnected", "failed", "closed"):
+                await _cleanup_pc("disconnected timeout")
+        except asyncio.CancelledError:
+            pass
+
+    async def _connect_watchdog():
+        try:
+            await asyncio.sleep(connect_timeout)
+            if pc in pcs and pc.connectionState in ("new", "connecting"):
+                await _cleanup_pc("connecting timeout")
+        except asyncio.CancelledError:
+            pass
+
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
-        logger.info(f"WebRTC peer state changed: {pc.connectionState}")
-        if pc.connectionState in ("failed", "closed"):
-            await pc.close()
-            pcs.discard(pc)
-            logger.info(f"WebRTC peer closed. Remaining peers: {len(pcs)}")
+        state = pc.connectionState
+        logger.info(f"WebRTC peer state changed: {state}")
+        if state in ("failed", "closed"):
+            await _cleanup_pc(state)
+        elif state == "disconnected":
+            t = asyncio.create_task(_disconnect_watchdog())
+            bg_tasks.add(t)
+            t.add_done_callback(bg_tasks.discard)
+        elif state == "connected":
+            for task in list(bg_tasks):
+                if not task.done():
+                    task.cancel()
 
-    video_track = VideoDelayTrack(stream)
+    watchdog = asyncio.create_task(_connect_watchdog())
+    bg_tasks.add(watchdog)
+    watchdog.add_done_callback(bg_tasks.discard)
+
+    video_track = VideoDelayTrack(stream_or_provider)
     pc.addTrack(video_track)
 
     await pc.setRemoteDescription(offer)
@@ -96,7 +175,7 @@ def get_active_viewers_count() -> int:
     """Return count of actively connected WebRTC peer sessions."""
     active = 0
     for pc in list(pcs):
-        if pc.connectionState in ("connected", "connecting"):
+        if pc.connectionState == "connected":
             active += 1
     return active
 
@@ -104,6 +183,6 @@ def get_active_viewers_count() -> int:
 async def close_all():
     """Close all open peer connections cleanly."""
     logger.info(f"Closing {len(pcs)} WebRTC peer connections...")
-    coros = [pc.close() for pc in pcs]
+    coros = [pc.close() for pc in list(pcs)]
     await asyncio.gather(*coros, return_exceptions=True)
     pcs.clear()

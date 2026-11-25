@@ -12,6 +12,7 @@ HOST="0.0.0.0"
 
 PLIST_LABEL="com.$USER.$APP_NAME"
 PLIST_FILE="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+SUDOERS_FILE="/etc/sudoers.d/video_delay_server"
 
 # Colors
 C_RESET='\033[0m'
@@ -76,6 +77,23 @@ ensure_environment() {
     fi
 }
 
+graceful_kill_pid() {
+    local pid="$1"
+    if [ -z "$pid" ]; then
+        return 0
+    fi
+    kill -TERM "$pid" 2>/dev/null || true
+    local ticks=0
+    while [ $ticks -lt 10 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.5
+        ticks=$((ticks + 1))
+    done
+    kill -9 "$pid" 2>/dev/null || true
+}
+
 check_port() {
     local pid
     pid=$(lsof -ti :"$PORT" 2>/dev/null || true)
@@ -84,8 +102,7 @@ check_port() {
         # If it belongs to video delay server, offer to stop it
         if ps -p "$pid" -o command= | grep -q "main.py"; then
             info "Stopping existing Video Delay Server process (PID: $pid)..."
-            kill -9 "$pid" 2>/dev/null || true
-            sleep 1
+            graceful_kill_pid "$pid"
         else
             warn "Another program is using port $PORT. Set PORT=<number> ./server.sh start to use an alternate port."
         fi
@@ -157,6 +174,8 @@ cmd_start() {
         <string>$PROJECT_DIR</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
+        <key>OPENCV_AVFOUNDATION_SKIP_AUTH</key>
+        <string>1</string>
         <key>PATH</key>
         <string>$VENV_DIR/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
@@ -186,6 +205,10 @@ EOF
         
         # Display Banner & QR Code
         "$VENV_DIR/bin/python" src/qr_helper.py "$PORT"
+        if [ ! -f "$SUDOERS_FILE" ]; then
+            echo ""
+            info "Tip: Run './server.sh setup-power' once to enable 1-click Mac Restart/Shutdown from the web UI."
+        fi
     else
         err "Service started but port $PORT is not responding yet."
         echo "Check error logs: cat logs/videoserver_error.log"
@@ -212,11 +235,13 @@ cmd_stop() {
         stopped=true
     fi
 
-    # Kill any lingering python processes for main.py
+    # Kill any lingering python processes for main.py gracefully first
     local pids
     pids=$(pgrep -f "main.py" 2>/dev/null || true)
     if [ -n "$pids" ]; then
-        kill -9 $pids 2>/dev/null || true
+        for p in $pids; do
+            graceful_kill_pid "$p"
+        done
         stopped=true
     fi
 
@@ -277,6 +302,34 @@ cmd_logs() {
     tail -f -n 40 "$log_file"
 }
 
+cmd_doctor() {
+    ensure_environment
+    "$VENV_DIR/bin/python" -m src.diagnostics "$PORT"
+}
+
+cmd_setup_power() {
+    echo -e "${C_BOLD}==============================================================${C_RESET}"
+    echo -e "${C_BOLD}   🔌 Configuring Passwordless Mac Shutdown & Restart         ${C_RESET}"
+    echo -e "${C_BOLD}==============================================================${C_RESET}"
+    local tmp_sudo
+    tmp_sudo=$(mktemp)
+    cat > "$tmp_sudo" <<EOF
+# Allow Video Delay Server user ($USER) to cleanly shutdown or restart macOS headlessly
+$USER ALL=(root) NOPASSWD: /sbin/shutdown -h now, /sbin/shutdown -r now
+EOF
+    if sudo visudo -cf "$tmp_sudo"; then
+        sudo cp "$tmp_sudo" "$SUDOERS_FILE"
+        sudo chown root:wheel "$SUDOERS_FILE"
+        sudo chmod 0440 "$SUDOERS_FILE"
+        rm -f "$tmp_sudo"
+        ok "Passwordless Mac Restart & Shutdown enabled at $SUDOERS_FILE"
+    else
+        rm -f "$tmp_sudo"
+        err "Failed visudo validation; sudoers file was not installed."
+        exit 1
+    fi
+}
+
 cmd_uninstall() {
     echo -e "${C_BOLD}==============================================================${C_RESET}"
     echo -e "${C_BOLD}   🗑️  Uninstalling Video Delay Server Service                ${C_RESET}"
@@ -287,6 +340,11 @@ cmd_uninstall() {
     if [ -f "$PLIST_FILE" ]; then
         rm -f "$PLIST_FILE"
         ok "Removed LaunchAgent plist at $PLIST_FILE"
+    fi
+
+    if [ -f "$SUDOERS_FILE" ]; then
+        sudo rm -f "$SUDOERS_FILE" 2>/dev/null || true
+        ok "Removed power sudoers rule at $SUDOERS_FILE"
     fi
 
     echo ""
@@ -324,6 +382,12 @@ case "${1:-}" in
     logs)
         cmd_logs
         ;;
+    doctor)
+        cmd_doctor
+        ;;
+    setup-power)
+        cmd_setup_power
+        ;;
     uninstall|remove)
         cmd_uninstall
         ;;
@@ -337,6 +401,8 @@ case "${1:-}" in
         echo "  stop        Stop running service and free port $PORT"
         echo "  restart     Restart the background service"
         echo "  status      Check health, active camera, buffer RAM, and local URLs"
+        echo "  doctor      Run headless hardware, permission, USB speed, and log diagnostics"
+        echo "  setup-power Enable passwordless Mac Restart/Shutdown from the web control panel"
         echo "  logs        Stream live server logs (tail -f)"
         echo "  uninstall   Remove LaunchAgent service with optional data cleanup"
         echo ""

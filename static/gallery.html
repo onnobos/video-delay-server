@@ -296,28 +296,78 @@
                         return;
                     }
 
+                    var fallbackSvg = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22320%22 height=%22180%22%3E%3Crect fill=%22%231e293b%22 width=%22320%22 height=%22180%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 fill=%22%2394a3b8%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22 font-family=%22sans-serif%22%3ENo Preview%3C/text%3E%3C/svg%3E';
+
                     data.videos.forEach(function(video) {
                         var card = document.createElement('div');
                         card.className = 'video-card';
 
-                        var thumbHtml = '<div class="thumb-box" onclick="playModal(\'' + video.url + '\', \'' + video.name + '\')">' +
-                            '<img class="thumb-img" src="' + (video.thumbnail || '') + '" onerror="this.src=\'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22320%22 height=%22180%22%3E%3Crect fill=%22%231e293b%22 width=%22320%22 height=%22180%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 fill=%22%2394a3b8%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22 font-family=%22sans-serif%22%3ENo Preview%3C/text%3E%3C/svg%3E\'">' +
-                            '<div class="play-overlay"><div class="play-icon">▶</div></div>' +
-                        '</div>';
+                        var thumbBox = document.createElement('div');
+                        thumbBox.className = 'thumb-box';
+                        thumbBox.addEventListener('click', function() {
+                            playModal(video.url, video.name);
+                        });
 
-                        var bodyHtml = '<div class="card-body">' +
-                            '<div class="video-title">' + video.name + '</div>' +
-                            '<div class="video-meta">' +
-                                '<span>' + formatBytes(video.size) + '</span>' +
-                                '<span>' + formatDate(video.created) + '</span>' +
-                            '</div>' +
-                            '<div class="card-actions">' +
-                                '<a href="' + video.url + '" download class="btn" style="padding: 6px 12px; font-size: 12px;">⬇️ Download</a>' +
-                                '<button class="btn btn-danger" onclick="deleteVideo(\'' + video.filename + '\')">🗑️ Delete</button>' +
-                            '</div>' +
-                        '</div>';
+                        var img = document.createElement('img');
+                        img.className = 'thumb-img';
+                        img.src = video.thumbnail || fallbackSvg;
+                        img.addEventListener('error', function() {
+                            img.src = fallbackSvg;
+                        });
 
-                        card.innerHTML = thumbHtml + bodyHtml;
+                        var playOverlay = document.createElement('div');
+                        playOverlay.className = 'play-overlay';
+                        var playIcon = document.createElement('div');
+                        playIcon.className = 'play-icon';
+                        playIcon.textContent = '▶';
+                        playOverlay.appendChild(playIcon);
+
+                        thumbBox.appendChild(img);
+                        thumbBox.appendChild(playOverlay);
+
+                        var body = document.createElement('div');
+                        body.className = 'card-body';
+
+                        var title = document.createElement('div');
+                        title.className = 'video-title';
+                        title.textContent = video.name;
+
+                        var meta = document.createElement('div');
+                        meta.className = 'video-meta';
+                        var sizeSpan = document.createElement('span');
+                        sizeSpan.textContent = formatBytes(video.size);
+                        var dateSpan = document.createElement('span');
+                        dateSpan.textContent = formatDate(video.created);
+                        meta.appendChild(sizeSpan);
+                        meta.appendChild(dateSpan);
+
+                        var actions = document.createElement('div');
+                        actions.className = 'card-actions';
+
+                        var dlLink = document.createElement('a');
+                        dlLink.href = video.url;
+                        dlLink.setAttribute('download', '');
+                        dlLink.className = 'btn';
+                        dlLink.style.padding = '6px 12px';
+                        dlLink.style.fontSize = '12px';
+                        dlLink.textContent = '⬇️ Download';
+
+                        var delBtn = document.createElement('button');
+                        delBtn.className = 'btn btn-danger';
+                        delBtn.textContent = '🗑️ Delete';
+                        delBtn.addEventListener('click', function() {
+                            deleteVideo(video.filename);
+                        });
+
+                        actions.appendChild(dlLink);
+                        actions.appendChild(delBtn);
+
+                        body.appendChild(title);
+                        body.appendChild(meta);
+                        body.appendChild(actions);
+
+                        card.appendChild(thumbBox);
+                        card.appendChild(body);
                         grid.appendChild(card);
                     });
                 })

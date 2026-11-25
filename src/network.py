@@ -8,16 +8,22 @@ def get_local_ip() -> str:
     Tries UDP routing first, then falls back to macOS network interfaces.
     """
     # 1. Check outbound route (fast, no actual packet sent)
+    s = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.5)
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
-        s.close()
         if ip and not ip.startswith('127.'):
             return ip
     except Exception:
         pass
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     # 2. Iterate common macOS network interfaces
     for iface in ['en0', 'en1', 'en2', 'en3', 'en4', 'bridge0', 'p2p0']:

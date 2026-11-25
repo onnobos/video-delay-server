@@ -1,11 +1,19 @@
+import os
+
+# --- PATHS ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
+THUMBNAILS_DIR = os.path.join(BASE_DIR, "thumbnails")
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+
 # --- CONFIGURATION ---
 DELAY_SECONDS = 5
 FPS = 30
 WIDTH = 1280
 HEIGHT = 720
 
-# Camera defaults (auto-discovered dynamically if not specified)
-CAM_INDEX_PRIMARY = 1
+# Camera defaults (None = auto-discover best capture card, e.g. Elgato HD60 S+)
+CAM_INDEX_PRIMARY = None
 CAM_INDEX_SECONDARY = 0
 
 # Video Overlay Defaults
