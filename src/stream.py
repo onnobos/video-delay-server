@@ -5,7 +5,7 @@ import queue
 import os
 import datetime
 from collections import deque
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable, List
 import numpy as np
 
 # App Imports
@@ -119,6 +119,12 @@ class VideoDelayStream:
     _frozen_frame_streak: int = 0
     _last_sample_small: Optional[np.ndarray] = None
     _test_pattern_tick: int = 0
+    capture_read_ms: float = 0.0
+    capture_proc_ms: float = 0.0
+    transmit_fps: float = 0.0
+    _health_frame_counter: int = 0
+    _cached_fps_text: str = ""
+    _cached_fps_x: int = 0
 
     def __init__(self, settings: StreamSettings, auto_start: bool = False, headless: bool = False):
         logger.info("Initializing VideoDelayStream...")
@@ -143,11 +149,18 @@ class VideoDelayStream:
         self.height = self.settings.height
         self.actual_fps = float(self.settings.fps)
         self.measured_fps = float(self.settings.fps)
+        self.transmit_fps = 0.0
+        self.capture_read_ms = 0.0
+        self.capture_proc_ms = 0.0
         self._fps_timestamps: deque = deque(maxlen=60)
+        self._tx_timestamps: deque = deque(maxlen=60)
+        self._health_frame_counter = 0
+        self._cached_fps_text = ""
+        self._cached_fps_x = 0
         self._open_camera()
 
-        # Circular delay buffer
-        self.buffer_lock = threading.Lock()
+        # Circular delay buffer (Condition enables zero-poll transmit wakeups)
+        self.buffer_lock = threading.Condition()
         self.buffer = deque(maxlen=self.settings.buffer_size)
 
         # Frame broadcasting for WebRTC
@@ -155,6 +168,8 @@ class VideoDelayStream:
         self.latest_frame: Optional[np.ndarray] = None
         self.delayed_frame: Optional[np.ndarray] = None
         self.frame_seq = 0
+        self._listeners_lock = threading.Lock()
+        self._frame_listeners: List[Callable[[], None]] = []
 
         # Signal loss & frame health watchdog state
         self.preferred_camera_name: Optional[str] = self.camera_name
@@ -232,7 +247,11 @@ class VideoDelayStream:
             self.is_signal_lost = True
             return
 
-        # Request resolution & FPS
+        # Minimize internal OpenCV frame queue & request resolution/FPS
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.settings.height)
         self.cap.set(cv2.CAP_PROP_FPS, self.settings.fps)
@@ -241,11 +260,24 @@ class VideoDelayStream:
         ret, test_frame = self.cap.read()
         if ret and test_frame is not None:
             h, w, _ = test_frame.shape
-            self.width = int(w)
-            self.height = int(h)
+            if getattr(self.settings, "downscale_oversized", True) and (
+                w > self.settings.width or h > self.settings.height
+            ):
+                self.width = int(self.settings.width)
+                self.height = int(self.settings.height)
+                logger.info(
+                    f"Camera delivered {w}x{h}; downscaling oversized frames to {self.width}x{self.height}"
+                )
+            else:
+                self.width = int(w)
+                self.height = int(h)
             self.is_signal_lost = False
             del test_frame
-            logger.info(f"Camera successfully initialized: {self.width}x{self.height}")
+            raw_fps = self.cap.get(cv2.CAP_PROP_FPS)
+            reported_fps = f"{raw_fps:.1f}" if isinstance(raw_fps, (int, float)) else str(raw_fps)
+            logger.info(
+                f"Camera initialized: {self.width}x{self.height} (hardware reports {reported_fps} FPS)"
+            )
         else:
             logger.warning("Camera opened but failed to read initial frame (waiting for HDMI signal).")
             self.is_signal_lost = True
@@ -332,11 +364,44 @@ class VideoDelayStream:
         cv2.putText(frame, sub, (cx - sz2[0] // 2, cy + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1)
         return frame
 
-    def _analyze_frame_health(self, raw_frame: np.ndarray) -> bool:
+    def add_frame_listener(self, callback: Callable[[], None]):
+        """Register a lightweight callback invoked whenever a new delayed frame is emitted."""
+        if not hasattr(self, "_listeners_lock"):
+            self._listeners_lock = threading.Lock()
+            self._frame_listeners = []
+        with self._listeners_lock:
+            if callback not in self._frame_listeners:
+                self._frame_listeners.append(callback)
+
+    def remove_frame_listener(self, callback: Callable[[], None]):
+        """Unregister a frame listener callback."""
+        if not hasattr(self, "_listeners_lock"):
+            return
+        with self._listeners_lock:
+            if callback in self._frame_listeners:
+                self._frame_listeners.remove(callback)
+
+    def _notify_frame_listeners(self):
+        if not hasattr(self, "_listeners_lock"):
+            return
+        with self._listeners_lock:
+            listeners = list(self._frame_listeners)
+        for cb in listeners:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def _analyze_frame_health(self, raw_frame: np.ndarray, stride: int = 1) -> bool:
         """
         Inspect captured frame for silent black or frozen video failures.
         Returns False if frozen long enough to require hardware reset.
         """
+        step = max(1, int(stride))
+        black_thresh = max(1, 30 // step)
+        frozen_warn = max(1, 60 // step)
+        frozen_reset = max(1, 150 // step)
+
         small = raw_frame[::16, ::16]
         mean_val = float(np.mean(small))
 
@@ -344,7 +409,7 @@ class VideoDelayStream:
             self._black_frame_streak += 1
             self._frozen_frame_streak = 0
             self._last_sample_small = small.copy()
-            if self._black_frame_streak >= 30:
+            if self._black_frame_streak >= black_thresh:
                 self.frame_health = "black_frame"
                 self.diagnostic_hint = "Black video frame detected (check HDMI source power, HDCP, or USB 3.0 cable)"
             return True
@@ -361,10 +426,10 @@ class VideoDelayStream:
 
         self._last_sample_small = small.copy()
 
-        if self._frozen_frame_streak >= 60:
+        if self._frozen_frame_streak >= frozen_warn:
             self.frame_health = "frozen_frame"
             self.diagnostic_hint = "Video signal appears frozen (HDMI handshake may be stuck)"
-            if self._frozen_frame_streak >= 150:
+            if self._frozen_frame_streak >= frozen_reset:
                 self._frozen_frame_streak = 0
                 return False
             return True
@@ -384,8 +449,11 @@ class VideoDelayStream:
         # 2. FPS Overlay (Top-Right)
         if self.settings.show_fps:
             fps_text = f"{int(round(self.measured_fps))} FPS"
-            (tw, _), _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2)
-            fps_x = self.width - tw - 30
+            if fps_text != self._cached_fps_text or self._cached_fps_x <= 0:
+                (tw, _), _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2)
+                self._cached_fps_text = fps_text
+                self._cached_fps_x = max(10, self.width - tw - 30)
+            fps_x = self._cached_fps_x
             cv2.putText(frame, fps_text, (fps_x, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 5)
             cv2.putText(frame, fps_text, (fps_x, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2)
 
@@ -429,12 +497,22 @@ class VideoDelayStream:
             backend = cameras.get_backend()
             new_cap = cv2.VideoCapture(self.camera_index, backend)
             if new_cap and new_cap.isOpened():
+                try:
+                    new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
                 new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.width)
                 new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.settings.height)
                 new_cap.set(cv2.CAP_PROP_FPS, self.settings.fps)
                 ret, test_frame = new_cap.read()
                 if ret and test_frame is not None:
                     h, w = test_frame.shape[:2]
+                    if getattr(self.settings, "downscale_oversized", True) and (
+                        w > self.settings.width or h > self.settings.height
+                    ):
+                        target_w, target_h = int(self.settings.width), int(self.settings.height)
+                    else:
+                        target_w, target_h = int(w), int(h)
                     with self._cap_lock:
                         old_cap = self.cap
                         self.cap = new_cap
@@ -444,8 +522,9 @@ class VideoDelayStream:
                                 old_cap.release()
                             except Exception:
                                 pass
-                        self.width = int(w)
-                        self.height = int(h)
+                        self.width = target_w
+                        self.height = target_h
+                        self._cached_fps_x = 0
                         self.consecutive_drops = 0
                         self.is_signal_lost = False
                         self._black_frame_streak = 0
@@ -468,32 +547,75 @@ class VideoDelayStream:
             self._reconnecting = False
 
     def capture_loop(self):
-        """Continuous frame ingestion loop with non-blocking auto-reconnection and health watchdog."""
+        """Continuous frame ingestion loop with zero-sleep live capture and drift-free standby pacing."""
+        next_synthetic_tick: Optional[float] = None
+        next_enqueue_time: Optional[float] = None
+
         while self.running:
-            start_time = time.monotonic()
             target_fps = max(1.0, float(self.settings.fps))
             target_interval = 1.0 / target_fps
 
             frame = None
+            live_capture = False
+
             if self.test_pattern_mode:
                 frame = self._generate_test_pattern_frame()
                 self.frame_health = "test_pattern"
                 self.diagnostic_hint = "Synthetic test pattern active"
             else:
                 if not self.is_signal_lost:
+                    t_read_start = time.monotonic()
                     with self._cap_lock:
                         cap = self.cap
                         if cap and cap.isOpened():
                             ret, raw_frame = cap.read()
                         else:
                             ret, raw_frame = False, None
+                    read_ms = (time.monotonic() - t_read_start) * 1000.0
+                    self.capture_read_ms = (
+                        read_ms if self.capture_read_ms <= 0.0 else (0.2 * read_ms + 0.8 * self.capture_read_ms)
+                    )
 
                     if ret and raw_frame is not None:
-                        keep_ok = self._analyze_frame_health(raw_frame)
+                        live_capture = True
+                        next_synthetic_tick = None
+
+                        # If hardware produces faster than target_fps (e.g. 60fps card at 30fps target),
+                        # drain cap.read() continuously but only process/enqueue at target_fps.
+                        now_gate = time.monotonic()
+                        if next_enqueue_time is None:
+                            next_enqueue_time = now_gate
+                        elif now_gate + 0.002 < next_enqueue_time:
+                            continue
+
+                        next_enqueue_time += target_interval
+                        if now_gate - next_enqueue_time > target_interval:
+                            next_enqueue_time = now_gate
+
+                        t_proc_start = time.monotonic()
+                        if getattr(self.settings, "downscale_oversized", True) and (
+                            raw_frame.shape[1] > self.settings.width or raw_frame.shape[0] > self.settings.height
+                        ):
+                            raw_frame = cv2.resize(
+                                raw_frame,
+                                (self.settings.width, self.settings.height),
+                                interpolation=cv2.INTER_LINEAR,
+                            )
+
+                        self._health_frame_counter += 1
+                        if self._health_frame_counter % 5 == 0:
+                            keep_ok = self._analyze_frame_health(raw_frame, stride=5)
+                        else:
+                            keep_ok = True
+
                         if keep_ok:
                             frame = raw_frame
-                            self.width = int(raw_frame.shape[1])
-                            self.height = int(raw_frame.shape[0])
+                            new_w = int(raw_frame.shape[1])
+                            new_h = int(raw_frame.shape[0])
+                            if new_w != self.width or new_h != self.height:
+                                self.width = new_w
+                                self.height = new_h
+                                self._cached_fps_x = 0
                             self.consecutive_drops = 0
                         else:
                             logger.warning("Frozen camera stream detected; resetting capture hardware...")
@@ -526,6 +648,8 @@ class VideoDelayStream:
                                     self.cap = None
 
                 if frame is None:
+                    live_capture = False
+                    t_proc_start = time.monotonic()
                     self.frame_health = "no_signal"
                     if not self.diagnostic_hint:
                         self.diagnostic_hint = "HDMI signal lost or camera disconnected"
@@ -536,6 +660,8 @@ class VideoDelayStream:
                         threading.Thread(target=self._attempt_reconnect, daemon=True).start()
 
                     frame = self._generate_standby_frame()
+            if self.test_pattern_mode:
+                t_proc_start = time.monotonic()
 
             # Measure actual ingestion FPS
             fps_now = time.monotonic()
@@ -548,28 +674,47 @@ class VideoDelayStream:
             # Apply overlays
             self._apply_overlays(frame)
 
-            # Store latest raw frame for snapshot
+            # Store direct reference for snapshot (frame is not mutated afterwards)
             with self.frame_lock:
-                self.latest_frame = frame.copy()
+                self.latest_frame = frame
 
-            # Append to circular delay buffer
+            # Append to circular delay buffer and wake transmit_loop immediately
             with self.buffer_lock:
                 self.buffer.append(frame)
+                if hasattr(self.buffer_lock, "notify_all"):
+                    self.buffer_lock.notify_all()
 
-            # Pace capture loop
-            elapsed = time.monotonic() - start_time
-            sleep_needed = target_interval - elapsed
-            if sleep_needed > 0:
-                time.sleep(sleep_needed)
+            proc_ms = (time.monotonic() - t_proc_start) * 1000.0
+            self.capture_proc_ms = (
+                proc_ms if self.capture_proc_ms <= 0.0 else (0.2 * proc_ms + 0.8 * self.capture_proc_ms)
+            )
+
+            # Live hardware capture is self-paced by cap.read() (zero sleep avoids vsync aliasing).
+            # Only synthetic/standby frames sleep using drift-free monotonic ticks.
+            if not live_capture:
+                now = time.monotonic()
+                if next_synthetic_tick is None:
+                    next_synthetic_tick = now + target_interval
+                else:
+                    next_synthetic_tick += target_interval
+                    if now - next_synthetic_tick > 0.25:
+                        next_synthetic_tick = now + target_interval
+                sleep_needed = next_synthetic_tick - now
+                if sleep_needed > 0:
+                    time.sleep(sleep_needed)
 
     def transmit_loop(self):
-        """Controls pacing and pops delayed frames for WebRTC and Recording."""
+        """Condition-signaled pacing loop emitting delayed frames to WebRTC and Recording."""
+        next_tx_tick: Optional[float] = None
+        if not hasattr(self, "_tx_timestamps"):
+            self._tx_timestamps = deque(maxlen=60)
+
         while self.running:
-            start_time = time.monotonic()
             target_fps = max(1.0, float(self.settings.fps))
             target_interval = 1.0 / target_fps
 
             if self.paused:
+                next_tx_tick = None
                 if not self.headless and self.delayed_frame is not None:
                     display_frame = self.delayed_frame.copy()
                     cv2.putText(display_frame, "PAUSED", (self.width - 200, 60),
@@ -584,67 +729,90 @@ class VideoDelayStream:
                 time.sleep(min(0.05, target_interval))
                 continue
 
-            has_frame = False
             delayed_bgr = None
+            surplus_frames = False
 
             with self.buffer_lock:
-                # Buffer has reached configured delay
-                if len(self.buffer) >= self.settings.buffer_size:
-                    delayed_bgr = self.buffer.popleft()
-                    has_frame = True
-
-            if has_frame and delayed_bgr is not None:
-                # Store delayed frame & notify WebRTC subscribers
-                with self.frame_lock:
-                    self.delayed_frame = delayed_bgr
-                    self.frame_seq += 1
-
-                # Handle video recording thread-safely
-                should_stop_rec = False
-                with self.rec_lock:
-                    if self.is_recording and self.recorder_thread:
-                        if self.rec_queue.full():
-                            try:
-                                self.rec_queue.get_nowait()
-                            except queue.Empty:
-                                pass
-                        try:
-                            self.rec_queue.put_nowait(delayed_bgr)
-                        except queue.Full:
-                            pass
-                        if not self.thumbnail_saved and self.current_recording_name:
-                            self._save_thumbnail(delayed_bgr)
-                    elif not self.streaming and self.is_recording:
-                        should_stop_rec = True
-
-                if should_stop_rec:
-                    self.stop_recording()
-
-                # Interactive window preview (if not headless)
-                if not self.headless:
-                    display_frame = delayed_bgr.copy()
-                    if self.is_recording:
-                        cv2.putText(display_frame, "REC", (self.width - 100, self.height - 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.imshow("Video Delay Server", display_frame)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q'):
-                        self.running = False
+                while self.running and not self.paused and len(self.buffer) < self.settings.buffer_size:
+                    next_tx_tick = None
+                    if hasattr(self.buffer_lock, "wait"):
+                        self.buffer_lock.wait(timeout=0.05)
+                    else:
                         break
-                    elif key == ord('s'):
-                        self.streaming = not self.streaming
-                    elif key == ord('p'):
-                        self.paused = not self.paused
-            else:
-                # Buffer still filling up
-                time.sleep(0.002)
+                if self.running and not self.paused and len(self.buffer) >= self.settings.buffer_size:
+                    delayed_bgr = self.buffer.popleft()
+                    surplus_frames = len(self.buffer) >= self.settings.buffer_size
+
+            if delayed_bgr is None:
+                if not hasattr(self.buffer_lock, "wait"):
+                    time.sleep(0.002)
                 continue
 
-            # Pacing
-            elapsed = time.monotonic() - start_time
-            sleep_needed = target_interval - elapsed
-            if sleep_needed > 0:
-                time.sleep(sleep_needed)
+            # Store delayed frame & wake WebRTC subscribers immediately
+            tx_now = time.monotonic()
+            self._tx_timestamps.append(tx_now)
+            if len(self._tx_timestamps) >= 2:
+                span = self._tx_timestamps[-1] - self._tx_timestamps[0]
+                if span > 0:
+                    self.transmit_fps = round((len(self._tx_timestamps) - 1) / span, 1)
+
+            with self.frame_lock:
+                self.delayed_frame = delayed_bgr
+                self.frame_seq += 1
+            self._notify_frame_listeners()
+
+            # Handle video recording thread-safely
+            should_stop_rec = False
+            with self.rec_lock:
+                if self.is_recording and self.recorder_thread:
+                    if self.rec_queue.full():
+                        try:
+                            self.rec_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                    try:
+                        self.rec_queue.put_nowait(delayed_bgr)
+                    except queue.Full:
+                        pass
+                    if not self.thumbnail_saved and self.current_recording_name:
+                        self._save_thumbnail(delayed_bgr)
+                elif not self.streaming and self.is_recording:
+                    should_stop_rec = True
+
+            if should_stop_rec:
+                self.stop_recording()
+
+            # Interactive window preview (if not headless)
+            if not self.headless:
+                display_frame = delayed_bgr.copy()
+                if self.is_recording:
+                    cv2.putText(display_frame, "REC", (self.width - 100, self.height - 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow("Video Delay Server", display_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    self.running = False
+                    break
+                elif key == ord('s'):
+                    self.streaming = not self.streaming
+                elif key == ord('p'):
+                    self.paused = not self.paused
+
+            # Only sleep if surplus frames exist (e.g. after shrinking delay);
+            # in steady state, buffer_lock.wait() wakes right on each captured frame.
+            if surplus_frames:
+                now = time.monotonic()
+                if next_tx_tick is None:
+                    next_tx_tick = now + target_interval
+                else:
+                    next_tx_tick += target_interval
+                    if now - next_tx_tick > 0.25:
+                        next_tx_tick = now + target_interval
+                sleep_needed = next_tx_tick - now
+                if sleep_needed > 0:
+                    time.sleep(sleep_needed)
+            else:
+                next_tx_tick = None
 
     def set_delay(self, new_delay_seconds: int):
         """Dynamically adjust the delay buffer size without stopping the stream."""
@@ -760,6 +928,9 @@ class VideoDelayStream:
             "resolution": f"{self.width}x{self.height}",
             "fps": self.actual_fps,
             "measured_fps": round(self.measured_fps, 1),
+            "transmit_fps": round(getattr(self, "transmit_fps", 0.0), 1),
+            "capture_read_ms": round(getattr(self, "capture_read_ms", 0.0), 2),
+            "capture_proc_ms": round(getattr(self, "capture_proc_ms", 0.0), 2),
             "buffer_length": buf_len,
             "buffer_capacity": buf_max,
             "buffer_percent": percent_full,
@@ -791,6 +962,9 @@ class VideoDelayStream:
         """Gracefully release hardware and stop all worker threads."""
         logger.info("Stopping stream...")
         self.running = False
+        if hasattr(self, "buffer_lock") and hasattr(self.buffer_lock, "notify_all"):
+            with self.buffer_lock:
+                self.buffer_lock.notify_all()
 
         if hasattr(self, 't_cap') and self.t_cap and self.t_cap.is_alive():
             self.t_cap.join(timeout=2.0)

@@ -513,10 +513,11 @@ class TestVideoDelayServer(unittest.TestCase):
         mgr = StreamManager()
         with patch.object(server, "manager", mgr), \
              patch("src.diagnostics.check_tcc_permission", return_value={"id": "tcc_permission", "title": "TCC", "status": "ok", "detail": "ok", "remediation": ""}), \
+             patch("src.diagnostics.check_python_architecture", return_value={"id": "python_arch", "title": "Arch", "status": "ok", "detail": "ok", "remediation": ""}), \
              patch("src.diagnostics.check_usb_and_cameras", return_value={"id": "usb_hardware", "title": "USB", "status": "ok", "detail": "ok", "remediation": ""}):
             diag = server.get_diagnostics()
             self.assertIn("overall_status", diag)
-            self.assertEqual(len(diag["checks"]), 5)
+            self.assertEqual(len(diag["checks"]), 6)
 
             logs = server.get_server_logs(lines=20)
             self.assertIn("app_log", logs)
@@ -593,6 +594,185 @@ class TestVideoDelayServer(unittest.TestCase):
         self.assertIn("powerModal", index_html)
         self.assertIn("/system/restart-mac", index_html)
         self.assertIn("/system/shutdown-mac", index_html)
+
+    def test_fps_optimizations_downscale_gating_and_metrics(self):
+        # 1. Oversized 1080p capture frames auto-downscale to 1280x720 and run without sleep
+        s = StreamSettings(delay_seconds=1, fps=30, width=1280, height=720, downscale_oversized=True)
+        stream = VideoDelayStream.__new__(VideoDelayStream)
+        stream.settings = s
+        stream.running = True
+        stream.headless = True
+        stream.camera_index = 0
+        stream.camera_name = "Elgato HD60 S+"
+        stream.width = 1280
+        stream.height = 720
+        stream.actual_fps = 30.0
+        stream.measured_fps = 30.0
+        stream._fps_timestamps = deque(maxlen=60)
+        stream._tx_timestamps = deque(maxlen=60)
+        stream._cap_lock = threading.Lock()
+        stream.buffer_lock = threading.Condition()
+        stream.buffer = deque(maxlen=30)
+        stream.frame_lock = threading.Lock()
+        stream.latest_frame = None
+        stream.delayed_frame = None
+        stream.frame_seq = 0
+        stream._listeners_lock = threading.Lock()
+        stream._frame_listeners = []
+        stream.is_signal_lost = False
+        stream.consecutive_drops = 0
+        stream.last_reconnect_attempt = 0.0
+        stream._reconnecting = False
+        stream.is_recording = False
+        stream.streaming = True
+        stream.paused = False
+        stream.reconnect_attempts = 0
+
+        big_frame = np.full((1080, 1920, 3), 128, dtype=np.uint8)
+        fake_cap = MagicMock()
+        fake_cap.isOpened.return_value = True
+        fake_cap.read.side_effect = lambda: (time.sleep(0.005) or (True, big_frame))
+        stream.cap = fake_cap
+
+        t = threading.Thread(target=stream.capture_loop, daemon=True)
+        t.start()
+        time.sleep(0.35)
+        stream.running = False
+        t.join(timeout=2.0)
+
+        # Because hardware cap.read() took 5ms (~200 Hz) and target_fps=30, gating throttles to ~30 Hz (8-13 frames in 0.35s)
+        self.assertGreaterEqual(len(stream.buffer), 7)
+        self.assertLessEqual(len(stream.buffer), 15)
+        self.assertEqual(stream.buffer[0].shape, (720, 1280, 3))
+        m = stream.get_metrics()
+        self.assertGreater(m["capture_read_ms"], 0.0)
+        self.assertGreater(m["capture_proc_ms"], 0.0)
+        self.assertIn("transmit_fps", m)
+
+    def test_webrtc_yuv420p_odd_dims_h264_and_relay(self):
+        # 1. Odd dimensions safely handled in _bgr_to_yuv420p_frame -> yuv420p
+        odd_frame = np.full((241, 321, 3), 90, dtype=np.uint8)
+        vf = webrtc._bgr_to_yuv420p_frame(odd_frame, 100, webrtc.VIDEO_TIME_BASE)
+        self.assertEqual(vf.format.name, "yuv420p")
+        self.assertEqual((vf.width, vf.height), (320, 240))
+
+        # 2. Shared YUV420P cache converts once per (stream_id, frame_seq) while building distinct VideoFrames
+        even_frame = np.full((240, 320, 3), 64, dtype=np.uint8)
+        with patch("src.webrtc.cv2.cvtColor", wraps=webrtc.cv2.cvtColor) as mock_cvt:
+            f_a = webrtc._bgr_to_yuv420p_frame(even_frame, 0, webrtc.VIDEO_TIME_BASE, cache_key=(123, 7))
+            f_b = webrtc._bgr_to_yuv420p_frame(even_frame, 3000, webrtc.VIDEO_TIME_BASE, cache_key=(123, 7))
+            self.assertEqual(mock_cvt.call_count, 1)
+            self.assertIsNot(f_a, f_b)
+            self.assertEqual((f_a.pts, f_b.pts), (0, 3000))
+
+        # 3. Event-driven VideoDelayTrack + H.264 codec preference + deduplicated FPS counter
+        s = VideoDelayStream.__new__(VideoDelayStream)
+        s.settings = StreamSettings(delay_seconds=1, fps=30, width=320, height=240)
+        s.running = True
+        s.paused = False
+        s.actual_fps = 30.0
+        s.frame_lock = threading.Lock()
+        s.delayed_frame = even_frame
+        s.frame_seq = 1
+        s._listeners_lock = threading.Lock()
+        s._frame_listeners = []
+
+        async def run_test():
+            await webrtc.close_all()
+            track = webrtc.VideoDelayTrack(lambda: s)
+            frame = await track.recv()
+            self.assertEqual(frame.format.name, "yuv420p")
+            self.assertEqual(len(s._frame_listeners), 1)
+            track.stop()
+            self.assertEqual(len(s._frame_listeners), 0)
+
+            # Deduplication check: same cache_key from 2 viewers counts once
+            webrtc._webrtc_timestamps.clear()
+            webrtc._last_fps_key = None
+            webrtc._record_webrtc_emission((999, 10))
+            webrtc._record_webrtc_emission((999, 10))
+            self.assertEqual(len(webrtc._webrtc_timestamps), 1)
+            webrtc._record_webrtc_emission((999, 11))
+            self.assertEqual(len(webrtc._webrtc_timestamps), 2)
+
+            # H.264 codec ordering preference check
+            codecs = webrtc._get_h264_preferred_codecs()
+            self.assertGreater(len(codecs), 0)
+            self.assertEqual(codecs[0].mimeType.lower(), "video/h264")
+
+            # Two peers each get their own VideoDelayTrack and H.264 codec preference
+            fake_tr1 = MagicMock(kind="video")
+            fake_tr2 = MagicMock(kind="video")
+            fake_pc1 = MagicMock(connectionState="connected", localDescription=MagicMock(sdp="v=0", type="answer"))
+            fake_pc1.getTransceivers.return_value = [fake_tr1]
+            fake_pc1.setRemoteDescription = AsyncMock()
+            fake_pc1.createAnswer = AsyncMock(return_value=MagicMock())
+            fake_pc1.setLocalDescription = AsyncMock()
+            fake_pc1.close = AsyncMock()
+            fake_pc1.on = lambda ev: (lambda fn: fn)
+
+            fake_pc2 = MagicMock(connectionState="connected", localDescription=MagicMock(sdp="v=0", type="answer"))
+            fake_pc2.getTransceivers.return_value = [fake_tr2]
+            fake_pc2.setRemoteDescription = AsyncMock()
+            fake_pc2.createAnswer = AsyncMock(return_value=MagicMock())
+            fake_pc2.setLocalDescription = AsyncMock()
+            fake_pc2.close = AsyncMock()
+            fake_pc2.on = lambda ev: (lambda fn: fn)
+
+            provider = lambda: s
+            with patch("src.webrtc.RTCPeerConnection", side_effect=[fake_pc1, fake_pc2]):
+                await webrtc.handle_offer("v=0", "offer", provider)
+                await webrtc.handle_offer("v=0", "offer", provider)
+            t1 = fake_pc1.addTrack.call_args[0][0]
+            t2 = fake_pc2.addTrack.call_args[0][0]
+            self.assertIsNot(t1, t2)
+            fake_tr1.setCodecPreferences.assert_called_once()
+            fake_tr2.setCodecPreferences.assert_called_once()
+            await webrtc.close_all()
+
+        asyncio.run(run_test())
+
+    def test_record_on_stream_toggle_and_arch_diagnostics(self):
+        mgr = StreamManager()
+        mgr.settings.record_on_stream = False
+        fake_stream = MagicMock()
+        fake_stream.streaming = False
+        fake_stream.is_recording = False
+        mgr.stream = fake_stream
+        mgr.is_running = True
+
+        mgr.start_streaming()
+        self.assertTrue(fake_stream.streaming)
+        fake_stream.start_recording.assert_not_called()
+
+        mgr.set_record_on_stream(True)
+        fake_stream.start_recording.assert_called_once()
+        fake_stream.is_recording = True
+        mgr.set_record_on_stream(False)
+        fake_stream.stop_recording.assert_called_once()
+
+        # Rosetta 2 detection triggers error status
+        with patch("src.diagnostics.platform.system", return_value="Darwin"), \
+             patch("src.diagnostics.platform.machine", return_value="x86_64"), \
+             patch("src.diagnostics.subprocess.check_output", return_value=b"1\n"):
+            res = diagnostics.check_python_architecture()
+            self.assertEqual(res["status"], "error")
+            self.assertIn("Rosetta", res["detail"])
+
+        # Hardware read bottleneck diagnosis
+        fake_stream.get_metrics.return_value = {
+            "frame_health": "healthy",
+            "diagnostic_hint": "",
+            "measured_fps": 11.0,
+            "transmit_fps": 11.0,
+            "capture_read_ms": 88.0,
+            "capture_proc_ms": 2.0,
+            "fps": 30.0,
+            "resolution": "1280x720",
+        }
+        res_hw = diagnostics.check_stream_and_frame_health(mgr)
+        self.assertEqual(res_hw["status"], "warning")
+        self.assertIn("USB 3.0", res_hw["remediation"])
 
 
 if __name__ == "__main__":

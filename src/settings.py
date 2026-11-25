@@ -10,6 +10,8 @@ from src.config import (
     SHOW_TIMESTAMP,
     SHOW_FPS,
     SHOW_CAMERA_NAME,
+    RECORD_ON_STREAM,
+    DOWNSCALE_OVERSIZED,
 )
 
 class StreamSettings(BaseModel):
@@ -24,10 +26,12 @@ class StreamSettings(BaseModel):
     cam_index_primary: Optional[int] = CAM_INDEX_PRIMARY
     cam_index_secondary: Optional[int] = CAM_INDEX_SECONDARY
 
-    # Video Overlays
+    # Video Overlays & Pipeline Behavior
     show_timestamp: bool = SHOW_TIMESTAMP
     show_fps: bool = SHOW_FPS
     show_camera_name: bool = SHOW_CAMERA_NAME
+    record_on_stream: bool = RECORD_ON_STREAM
+    downscale_oversized: bool = DOWNSCALE_OVERSIZED
 
     @property
     def buffer_size(self) -> int:

@@ -419,12 +419,12 @@
                     <div class="val" id="statStream">--</div>
                 </div>
                 <div class="status-box">
-                    <div class="label">Viewers</div>
-                    <div class="val" id="statViewers">0</div>
+                    <div class="label">FPS (Cap / Web)</div>
+                    <div class="val" id="statFps">--</div>
                 </div>
                 <div class="status-box">
-                    <div class="label">Buffer RAM</div>
-                    <div class="val" id="statRam">0 MB</div>
+                    <div class="label">Viewers / RAM</div>
+                    <div class="val" id="statViewers">0 / 0 MB</div>
                 </div>
             </div>
 
@@ -477,7 +477,7 @@
             </div>
 
             <div class="card-title" style="margin-top: 20px;">⚙️ Delay & Overlays</div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
                 <div class="form-group">
                     <label for="inputDelay">Delay (Seconds)</label>
                     <input type="number" id="inputDelay" min="1" max="120" value="5">
@@ -485,6 +485,14 @@
                 <div class="form-group">
                     <label for="inputFps">Target FPS</label>
                     <input type="number" id="inputFps" min="10" max="60" value="30">
+                </div>
+                <div class="form-group">
+                    <label for="selectResolution">Resolution</label>
+                    <select id="selectResolution">
+                        <option value="1280x720" selected>1280×720 (Recommended)</option>
+                        <option value="960x540">960×540 (High FPS)</option>
+                        <option value="1920x1080">1920×1080 (Full HD)</option>
+                    </select>
                 </div>
             </div>
 
@@ -500,6 +508,10 @@
                 <label class="toggle-item">
                     <input type="checkbox" id="chkCamName">
                     <span>Show Camera Name</span>
+                </label>
+                <label class="toggle-item">
+                    <input type="checkbox" id="chkRecordOnStream" checked>
+                    <span>Record while streaming</span>
                 </label>
             </div>
 
@@ -758,8 +770,10 @@
                         tpBtn.textContent = t.test_pattern ? '🧪 Disable Test Pattern' : '🧪 Enable Test Pattern';
                     }
 
-                    document.getElementById('statViewers').textContent = data.active_viewers || 0;
-                    document.getElementById('statRam').textContent = (t.estimated_ram_mb || 0) + ' MB';
+                    var capFps = (t.measured_fps !== undefined) ? t.measured_fps : '--';
+                    var rtcFps = (t.webrtc_fps !== undefined) ? t.webrtc_fps : 0;
+                    document.getElementById('statFps').textContent = capFps + ' / ' + rtcFps;
+                    document.getElementById('statViewers').textContent = (data.active_viewers || 0) + ' / ' + (t.estimated_ram_mb || 0) + ' MB';
 
                     // Update meter
                     var pct = t.buffer_percent || 0;
@@ -775,10 +789,18 @@
                     if (document.activeElement !== fpsInput) {
                         fpsInput.value = data.settings.fps;
                     }
+                    var resSelect = document.getElementById('selectResolution');
+                    if (document.activeElement !== resSelect && data.settings.width && data.settings.height) {
+                        var resKey = data.settings.width + 'x' + data.settings.height;
+                        if (Array.prototype.some.call(resSelect.options, function(o) { return o.value === resKey; })) {
+                            resSelect.value = resKey;
+                        }
+                    }
                     if (!overlaysInitialized && data.settings) {
                         document.getElementById('chkTimestamp').checked = !!data.settings.show_timestamp;
                         document.getElementById('chkFps').checked = !!data.settings.show_fps;
                         document.getElementById('chkCamName').checked = !!data.settings.show_camera_name;
+                        document.getElementById('chkRecordOnStream').checked = (data.settings.record_on_stream !== false);
                         overlaysInitialized = true;
                     }
 
@@ -843,12 +865,16 @@
         });
 
         document.getElementById('btnApplySettings').addEventListener('click', function() {
+            var resParts = document.getElementById('selectResolution').value.split('x');
             var payload = {
                 delay_seconds: parseInt(document.getElementById('inputDelay').value, 10),
                 fps: parseInt(document.getElementById('inputFps').value, 10),
+                width: parseInt(resParts[0], 10),
+                height: parseInt(resParts[1], 10),
                 show_timestamp: document.getElementById('chkTimestamp').checked,
                 show_fps: document.getElementById('chkFps').checked,
-                show_camera_name: document.getElementById('chkCamName').checked
+                show_camera_name: document.getElementById('chkCamName').checked,
+                record_on_stream: document.getElementById('chkRecordOnStream').checked
             };
 
             fetch(API_BASE + '/settings', {

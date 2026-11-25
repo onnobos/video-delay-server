@@ -31,17 +31,52 @@ err()   { echo -e "${C_RED}❌ $*${C_RESET}"; }
 # 1. Python Discovery & Virtual Environment Bootstrap
 # ------------------------------------------------------------------------------
 detect_python() {
-    local candidates=("python3.11" "python3.12" "python3.10" "python3.13" "python3")
+    local host_arch
+    host_arch=$(uname -m)
+    local candidates=(
+        "/opt/homebrew/bin/python3.11"
+        "/opt/homebrew/bin/python3.12"
+        "/opt/homebrew/bin/python3.10"
+        "/opt/homebrew/bin/python3"
+        "python3.11"
+        "python3.12"
+        "python3.10"
+        "python3.13"
+        "python3"
+    )
     for py in "${candidates[@]}"; do
         if command -v "$py" &>/dev/null; then
+            local py_path
+            py_path="$(command -v "$py")"
             local ver
-            ver=$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+            ver=$("$py_path" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
             local major=${ver%.*}
             local minor=${ver#*.}
-            if [ "$major" -eq 3 ] && [ "$minor" -ge 9 ]; then
-                echo "$(command -v "$py")"
+            if [ "$major" = "3" ] && [ "$minor" -ge 9 ]; then
+                # On Apple Silicon, prefer native arm64 over Rosetta x86_64
+                if [ "$host_arch" = "arm64" ]; then
+                    local py_arch
+                    py_arch=$("$py_path" -c 'import platform; print(platform.machine())' 2>/dev/null || true)
+                    if [ "$py_arch" != "arm64" ]; then
+                        continue
+                    fi
+                fi
+                echo "$py_path"
                 return 0
             fi
+        fi
+    done
+
+    # Fallback if only x86_64 python exists
+    for py in "python3.11" "python3.12" "python3.10" "python3"; do
+        if command -v "$py" &>/dev/null; then
+            local py_path
+            py_path="$(command -v "$py")"
+            if [ "$host_arch" = "arm64" ]; then
+                warn "Only non-native Python found ($py_path). Performance may be throttled under Rosetta 2."
+            fi
+            echo "$py_path"
+            return 0
         fi
     done
     return 1
@@ -162,6 +197,12 @@ cmd_start() {
     
     <key>KeepAlive</key>
     <true/>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>LowPriorityIO</key>
+    <false/>
     
     <key>StandardOutPath</key>
     <string>$PROJECT_DIR/logs/videoserver.log</string>
@@ -307,6 +348,11 @@ cmd_doctor() {
     "$VENV_DIR/bin/python" -m src.diagnostics "$PORT"
 }
 
+cmd_bench() {
+    ensure_environment
+    "$VENV_DIR/bin/python" "$PROJECT_DIR/test_camera_fps.py" --bench
+}
+
 cmd_setup_power() {
     echo -e "${C_BOLD}==============================================================${C_RESET}"
     echo -e "${C_BOLD}   🔌 Configuring Passwordless Mac Shutdown & Restart         ${C_RESET}"
@@ -385,6 +431,9 @@ case "${1:-}" in
     doctor)
         cmd_doctor
         ;;
+    bench)
+        cmd_bench
+        ;;
     setup-power)
         cmd_setup_power
         ;;
@@ -402,6 +451,7 @@ case "${1:-}" in
         echo "  restart     Restart the background service"
         echo "  status      Check health, active camera, buffer RAM, and local URLs"
         echo "  doctor      Run headless hardware, permission, USB speed, and log diagnostics"
+        echo "  bench       Benchmark raw camera FPS, USB speed, and full pipeline FPS"
         echo "  setup-power Enable passwordless Mac Restart/Shutdown from the web control panel"
         echo "  logs        Stream live server logs (tail -f)"
         echo "  uninstall   Remove LaunchAgent service with optional data cleanup"

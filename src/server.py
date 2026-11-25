@@ -75,9 +75,13 @@ class CameraSelectRequest(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     delay_seconds: Optional[int] = Field(default=None, ge=1, le=120)
     fps: Optional[int] = Field(default=None, ge=5, le=60)
+    width: Optional[int] = Field(default=None, ge=320, le=3840)
+    height: Optional[int] = Field(default=None, ge=240, le=2160)
     show_timestamp: Optional[bool] = None
     show_fps: Optional[bool] = None
     show_camera_name: Optional[bool] = None
+    record_on_stream: Optional[bool] = None
+    downscale_oversized: Optional[bool] = None
 
 
 class TestPatternRequest(BaseModel):
@@ -211,7 +215,7 @@ def get_settings():
 
 @app.patch("/settings")
 def update_settings(req: SettingsUpdateRequest):
-    """Dynamically update settings without restarting the camera hardware."""
+    """Dynamically update settings without restarting unless resolution changed."""
     if req.delay_seconds is not None:
         manager.set_delay(req.delay_seconds)
     if req.fps is not None:
@@ -222,6 +226,12 @@ def update_settings(req: SettingsUpdateRequest):
         manager.settings.show_fps = req.show_fps
     if req.show_camera_name is not None:
         manager.settings.show_camera_name = req.show_camera_name
+    if req.downscale_oversized is not None:
+        manager.settings.downscale_oversized = req.downscale_oversized
+    if req.record_on_stream is not None:
+        manager.set_record_on_stream(req.record_on_stream)
+    if req.width is not None and req.height is not None:
+        manager.set_resolution(req.width, req.height)
 
     return {"message": "Settings updated", "status": manager.get_status()}
 

@@ -21,6 +21,10 @@ SHOW_TIMESTAMP = True
 SHOW_FPS = True
 SHOW_CAMERA_NAME = False
 
+# Capture & Recording Defaults
+RECORD_ON_STREAM = True
+DOWNSCALE_OVERSIZED = True
+
 # Buffer memory safety
 MAX_DELAY_SECONDS = 120
 DEFAULT_BUFFER_SIZE = DELAY_SECONDS * FPS

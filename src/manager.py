@@ -89,6 +89,29 @@ class StreamManager:
             else:
                 self.settings.fps = max(5, min(60, int(fps)))
 
+    def set_resolution(self, width: int, height: int):
+        """Update capture/output resolution (restarts active stream if changed)."""
+        with self._lock:
+            width = max(320, min(3840, int(width)))
+            height = max(240, min(2160, int(height)))
+            if self.settings.width == width and self.settings.height == height:
+                return
+            self.settings.width = width
+            self.settings.height = height
+            if self.is_running:
+                self.restart(self.settings)
+
+    def set_record_on_stream(self, enabled: bool):
+        """Toggle automatic MP4 disk recording while streaming."""
+        with self._lock:
+            enabled = bool(enabled)
+            self.settings.record_on_stream = enabled
+            if self.stream and self.stream.streaming:
+                if enabled and not self.stream.is_recording:
+                    self.stream.start_recording()
+                elif not enabled and self.stream.is_recording:
+                    self.stream.stop_recording()
+
     def start_streaming(self):
         with self._lock:
             if not self.is_running or not self.stream:
@@ -96,7 +119,7 @@ class StreamManager:
 
             if self.stream and not self.stream.streaming:
                 self.stream.streaming = True
-                if not self.stream.is_recording:
+                if self.settings.record_on_stream and not self.stream.is_recording:
                     self.stream.start_recording()
                 logger.info("Manager: Streaming activated.")
 
@@ -167,7 +190,8 @@ class StreamManager:
                 "frame_health": "stopped",
                 "diagnostic_hint": "",
                 "test_pattern": False,
-                "reconnect_attempts": 0
+                "reconnect_attempts": 0,
+                "webrtc_fps": webrtc.get_webrtc_fps(),
             }
         }
 
@@ -175,6 +199,8 @@ class StreamManager:
             status["streaming"] = self.stream.streaming
             status["paused"] = self.stream.paused
             status["recording"] = self.stream.is_recording
-            status["telemetry"] = self.stream.get_metrics()
+            metrics = self.stream.get_metrics()
+            metrics["webrtc_fps"] = webrtc.get_webrtc_fps()
+            status["telemetry"] = metrics
 
         return status

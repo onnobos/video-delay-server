@@ -11,13 +11,13 @@ Phones, tablets, and laptops on the local Wi-Fi can watch the delayed live repla
 ### Core Capabilities
 * **Hardware Camera Discovery & Auto-Default**: Detects connected video devices with friendly names via AVFoundation and automatically defaults to the **Elgato Game Capture HD60 S+**.
 * **Dynamic Camera Switching**: Change active video inputs on the fly via the Web UI dropdown or API without stopping the server.
-* **HDMI Signal-Loss Protection**: Displays an automatic standby screen (*"WAITING FOR VIDEO SIGNAL - Game Capture HD60 S+"*) if an HDMI cable or camera disconnects, and auto-resumes once signal returns.
-* **Synchronized WebRTC Streaming**: Multi-peer synchronized delivery via `aiortc` with monotonic PTS timing — sub-second overhead on top of your chosen delay.
-* **Dynamic Delay Resizing**: Adjust delay buffer duration (1–120s) on-the-fly from the web panel without tearing or rebooting.
-* **Apple Silicon Native H.264 Recording**: Encodes recordings in hardware-accelerated H.264 (`avc1`) MP4 format for native instant playback in iOS Safari, iPadOS, and macOS.
-* **In-Browser Video Gallery**: Review recorded clips with instant in-page modal playback, formatted file sizes, download, and delete controls.
-* **Customizable Visual Overlays**: Toggle live timestamp, FPS counter, and camera name overlays on or off.
-* **Mobile Terminal QR Code**: Prints an ASCII QR code on startup so you can simply scan your terminal screen with an iPhone or Android camera to open the live stream.
+* **Zero-Sleep Live Capture & Auto-Downscaling**: Self-paced `cap.read()` ingestion (`BUFFERSIZE=1`) with monotonic 60→30 FPS gating and automatic downscaling of oversized 1080p/4K feeds to your target preset (`960×540`, `1280×720`, or `1920×1080`).
+* **HDMI Signal-Loss Protection & Health Watchdog**: Displays an automatic standby screen (*"WAITING FOR VIDEO SIGNAL"*) if an HDMI cable or camera disconnects, detects silent black or frozen frames, and auto-recovers in the background.
+* **Event-Driven H.264 WebRTC Streaming**: Multi-peer `aiortc` delivery using `asyncio.Event` wakeups, a shared `BGR → YUV420P` conversion cache, and **H.264 codec preference** (VP8 fallback) for smooth 30 FPS playback across phones and tablets.
+* **Dynamic Delay, FPS & Recording Controls**: Adjust delay (1–120s), target FPS, resolution presets, and toggle **Record while streaming** (`avc1` H.264 MP4) without restarting the server.
+* **Headless 6-Point Diagnostics & Test Pattern**: Built-in health checks for TCC camera permission, native `arm64` vs Rosetta 2 Python, USB 3.0 link speed, per-stage FPS timings (`cap.read`, `proc`, `transmit`, `webrtc`), server log viewer, and synthetic SMPTE test pattern mode.
+* **Remote Mac Power Control**: Safely flush active recordings and restart or shut down a headless Mac directly from the Web UI (with optional passwordless `sudo /sbin/shutdown` setup).
+* **In-Browser Video Gallery & Mobile QR Code**: Review H.264 recordings in a modal player, customize overlays (timestamp, FPS, camera name), and scan the terminal ASCII QR code from your phone.
 
 ---
 
@@ -41,10 +41,10 @@ chmod +x server.sh
 ```
 
 The script will automatically:
-1. Detect Python 3.9+ (`python3.11`, `python3.12`, etc.)
+1. Detect native `arm64` Python 3.9+ (`python3.11`, `python3.12`, etc.) on Apple Silicon
 2. Bootstrap the virtual environment (`myenv/`) and install dependencies
 3. Scan connected video devices (defaulting to the **Elgato HD60 S+**)
-4. Launch the background daemon (`LaunchAgent`) with auto-restart on boot
+4. Launch the background daemon (`LaunchAgent`) with `ProcessType = Interactive` QoS and auto-restart on boot
 5. Print local URLs and an **interactive ASCII QR Code** in your terminal
 
 ---
@@ -53,11 +53,14 @@ The script will automatically:
 
 | Command | Description |
 | :--- | :--- |
-| **`./server.sh start`** | Bootstrap environment, install LaunchAgent, start background daemon, and display QR code |
+| **`./server.sh start`** | Bootstrap environment, install `Interactive` LaunchAgent, start daemon, and display QR code |
 | **`./server.sh run`** | Run in foreground with live terminal logs and mobile QR code |
 | **`./server.sh status`** | Show health, active PID, camera name, buffer RAM %, viewers, and local URLs |
 | **`./server.sh stop`** | Stop the background service and free port 8000 |
 | **`./server.sh restart`** | Gracefully restart the service |
+| **`./server.sh doctor`** | Run headless diagnostics (TCC permission, Python arch, USB 3.0 speed, cameras, logs) |
+| **`./server.sh bench`** | Benchmark raw camera FPS across resolutions, USB link speed, and full pipeline FPS |
+| **`./server.sh setup-power`** | Configure passwordless `sudo /sbin/shutdown` for remote Mac Restart/Shutdown from Web UI |
 | **`./server.sh logs`** | Stream live server logs (`tail -f logs/videoserver.log`) |
 | **`./server.sh uninstall`** | Unload service, remove plist, with optional cleanup of recordings/logs |
 
@@ -122,6 +125,25 @@ http://<your-mac-name>.local:8000/static/player.html
 
 ---
 
+## ⚡ Performance & Low-FPS Troubleshooting
+
+If the projected FPS overlay or browser stream runs below 20 FPS, run the built-in benchmark and diagnostics:
+
+```bash
+./server.sh bench
+./server.sh doctor
+```
+
+1. **Isolate Hardware (`cap.read`) vs. Python CPU (`proc`):**
+   * If `cap.read > 45 ms`: The bottleneck is upstream of Python — verify the Elgato HD60 S+ is using a **USB 3.0 (5 Gbps)** cable directly on the Mac (USB 2.0 `480 Mb/s` throttles high-res video), check your camera's HDMI output frame rate/exposure, or switch Resolution in the Web UI to **`960×540 (High FPS)`**.
+   * If `proc > 15 ms`: Uncheck **Record while streaming** in the Web UI or lower Resolution to **`960×540 (High FPS)`**.
+2. **Verify Native ARM64 Python (Apple Silicon):**
+   * Running an `x86_64` Python binary under Rosetta 2 cuts throughput sharply. `./server.sh doctor` flags Rosetta 2 automatically, and `./server.sh start` prefers native `/opt/homebrew/bin/python3.11`.
+3. **Update Older LaunchAgent Plists:**
+   * Run `./server.sh restart` so the LaunchAgent plist includes `ProcessType = Interactive` and `LowPriorityIO = false`, preventing macOS from scheduling capture threads on Efficiency Cores or coalescing timers.
+
+---
+
 ## API Reference
 
 ### Camera Discovery & Selection
@@ -129,8 +151,8 @@ http://<your-mac-name>.local:8000/static/player.html
 * `POST /cameras/select` - Switch camera device dynamically (`{"index": 1}`)
 
 ### Server & Stream Controls
-* `GET /status` - Real-time telemetry (active camera, buffer %, estimated RAM, viewers count)
-* `POST /stream/start` - Begin WebRTC delay transmission and recording
+* `GET /status` - Real-time telemetry (active camera, `measured_fps`, `transmit_fps`, `webrtc_fps`, `capture_read_ms`, `capture_proc_ms`, buffer %, estimated RAM, viewers count)
+* `POST /stream/start` - Begin WebRTC delay transmission (and recording if `record_on_stream` is enabled)
 * `POST /stream/stop` - Stop streaming and recording
 * `POST /stream/pause` - Temporarily pause transmission
 * `POST /stream/resume` - Resume transmission
@@ -139,7 +161,15 @@ http://<your-mac-name>.local:8000/static/player.html
 
 ### Dynamic Settings
 * `GET /settings` - Get active configuration
-* `PATCH /settings` - Update delay seconds (1–120s) or overlays on the fly without server restart
+* `PATCH /settings` - Dynamically update `delay_seconds` (1–120s), `fps` (5–60), `width`/`height`, `record_on_stream`, `downscale_oversized`, `show_timestamp`, `show_fps`, and `show_camera_name`
+
+### Diagnostics & Headless Host Control
+* `GET /diagnostics` - Run 6-point headless diagnostics (TCC, Python arch, USB speed, frame health, storage/network, power permissions)
+* `GET /logs?lines=80` - Tail recent application and error logs
+* `POST /diagnostics/recover` - Reset and re-discover camera hardware remotely
+* `POST /diagnostics/test-pattern` - Toggle synthetic SMPTE test pattern (`{"enabled": true}`)
+* `POST /system/restart-mac` - Flush active recordings/streams and restart macOS
+* `POST /system/shutdown-mac` - Flush active recordings/streams and shut down macOS
 
 ### Video Gallery & Storage
 * `GET /videos` - List all recordings with metadata, duration, and thumbnail URLs
@@ -151,19 +181,21 @@ http://<your-mac-name>.local:8000/static/player.html
 
 ```
 video-delay-server/
-├── server.sh                # Unified management CLI (start, stop, run, status, logs)
+├── server.sh                # Unified management CLI (start, stop, run, status, doctor, bench, logs)
 ├── deploy_mac.sh            # macOS deployment shortcut
 ├── stop.sh                  # Stop service shortcut
 ├── remove_mac.sh            # Service uninstallation shortcut
 ├── main.py                  # Python application entrypoint
+├── test_camera_fps.py       # Multi-resolution camera & full-pipeline FPS benchmark tool
 ├── requirements.txt         # Dependencies
 │
 ├── src/
 │   ├── cameras.py           # Hardware camera discovery & auto-default logic
+│   ├── diagnostics.py       # 6-point headless health checks, log tailing & Mac power actions
 │   ├── network.py           # LAN IP resolution & URL formatting
 │   ├── qr_helper.py         # Terminal ASCII QR code generator
-│   ├── stream.py            # Video capture, delay buffer, H.264 recorder
-│   ├── webrtc.py            # Event-driven WebRTC broadcaster
+│   ├── stream.py            # Zero-sleep capture, circular delay buffer, H.264 recorder
+│   ├── webrtc.py            # Event-driven WebRTC broadcaster (YUV420P cache + H.264 preference)
 │   ├── manager.py           # Stream lifecycle & status aggregation
 │   ├── server.py            # FastAPI REST API & static routing
 │   ├── settings.py          # Pydantic configuration models
@@ -171,7 +203,7 @@ video-delay-server/
 │   └── logger.py            # Rotating file and console logger
 │
 ├── static/
-│   ├── index.html           # Web control panel with camera dropdown & telemetry
+│   ├── index.html           # Web control panel with camera dropdown, FPS telemetry & diagnostics
 │   ├── player.html          # Full-page WebRTC video player (iPhone/iPad optimized)
 │   └── gallery.html         # In-browser video replay gallery with modal player
 │

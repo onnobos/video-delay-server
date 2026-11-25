@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import platform
 import subprocess
 import threading
 from collections import deque
@@ -153,8 +154,41 @@ def check_usb_and_cameras() -> Dict[str, Any]:
     }
 
 
+def check_python_architecture() -> Dict[str, Any]:
+    """Check whether Python is running natively (arm64) or under Rosetta 2 translation (x86_64)."""
+    arch = platform.machine().lower()
+    is_rosetta = False
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.check_output(
+                ["sysctl", "-n", "sysctl.proc_translated"],
+                stderr=subprocess.DEVNULL,
+                timeout=1.0,
+            ).decode().strip()
+            is_rosetta = (out == "1")
+        except Exception:
+            pass
+
+    if is_rosetta:
+        return {
+            "id": "python_arch",
+            "title": "Python Architecture (Apple Silicon)",
+            "status": "error",
+            "detail": f"Python is running under Rosetta 2 emulation ({arch}), which severely throttles video FPS.",
+            "remediation": "Install native ARM64 Homebrew Python ('arch -arm64 brew install python@3.11'), remove myenv/, and run './server.sh start'.",
+        }
+
+    return {
+        "id": "python_arch",
+        "title": "Python Architecture",
+        "status": "ok",
+        "detail": f"Native {arch} execution (no Rosetta overhead).",
+        "remediation": "",
+    }
+
+
 def check_stream_and_frame_health(manager: Any) -> Dict[str, Any]:
-    """Inspect active stream ingestion, FPS, and silent black/frozen frame health."""
+    """Inspect active stream ingestion, FPS, per-stage timings, and frame health."""
     if not manager.is_running or not manager.stream:
         return {
             "id": "frame_health",
@@ -168,32 +202,49 @@ def check_stream_and_frame_health(manager: Any) -> Dict[str, Any]:
     health = metrics.get("frame_health", "unknown")
     hint = metrics.get("diagnostic_hint", "")
     measured = metrics.get("measured_fps", 0.0)
+    tx_fps = metrics.get("transmit_fps", 0.0)
+    rtc_fps = webrtc.get_webrtc_fps()
+    read_ms = metrics.get("capture_read_ms", 0.0)
+    proc_ms = metrics.get("capture_proc_ms", 0.0)
     target = metrics.get("fps", 30.0)
     res = metrics.get("resolution", "unknown")
+    stage_info = f"cap={measured} | tx={tx_fps} | rtc={rtc_fps} FPS (read={read_ms}ms, proc={proc_ms}ms)"
 
     if health in ("no_signal", "black_frame", "frozen_frame"):
         return {
             "id": "frame_health",
             "title": "Video Signal & Frame Health",
             "status": "error",
-            "detail": f"State: {health} ({res}, {measured}/{target} FPS). {hint}".strip(),
+            "detail": f"State: {health} ({res}, {stage_info}). {hint}".strip(),
             "remediation": hint or "Click 'Reset Camera Hardware' or check the HDMI cable and camera output.",
         }
 
-    if measured < target * 0.5 and health != "test_pattern":
+    if measured < target * 0.7 and health != "test_pattern":
+        if read_ms > 45.0:
+            remedy = (
+                f"Hardware/USB read bottleneck ({read_ms} ms/frame). Verify USB 3.0 (5 Gbps) cable, "
+                "set camera HDMI output to 720p/1080p 30/60, or lower resolution to 960x540."
+            )
+        elif proc_ms > 15.0:
+            remedy = (
+                f"Python CPU processing bottleneck ({proc_ms} ms/frame). "
+                "Try disabling 'Record while streaming' or lowering resolution to 960x540."
+            )
+        else:
+            remedy = "Check USB 3.0 connection speed, camera output frame rate, or lower Target FPS in settings."
         return {
             "id": "frame_health",
             "title": "Video Signal & Frame Health",
             "status": "warning",
-            "detail": f"Low capture frame rate: {measured} FPS (target {target} FPS) at {res}.",
-            "remediation": "Check USB 3.0 connection speed or lower Target FPS in settings.",
+            "detail": f"Low capture frame rate at {res}: {stage_info} (target {target} FPS).",
+            "remediation": remedy,
         }
 
     return {
         "id": "frame_health",
         "title": "Video Signal & Frame Health",
         "status": "ok",
-        "detail": f"State: {health} — {res} @ {measured}/{target} FPS.",
+        "detail": f"State: {health} — {res} @ {stage_info}.",
         "remediation": "",
     }
 
@@ -335,6 +386,7 @@ def run_full_diagnostics(manager: Any) -> Dict[str, Any]:
     """Execute all headless diagnostic checks and summarize remediation steps."""
     checks = [
         check_tcc_permission(),
+        check_python_architecture(),
         check_usb_and_cameras(),
         check_stream_and_frame_health(manager),
         check_storage_and_network(),
@@ -371,6 +423,7 @@ def _print_cli_doctor(port: int = 8000) -> int:
 
     checks = [
         check_tcc_permission(),
+        check_python_architecture(),
         check_usb_and_cameras(),
         check_storage_and_network(),
         check_power_permissions(),
