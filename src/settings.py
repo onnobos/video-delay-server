@@ -12,6 +12,7 @@ from src.config import (
     SHOW_CAMERA_NAME,
     RECORD_ON_STREAM,
     DOWNSCALE_OVERSIZED,
+    AUTO_START_STREAM,
 )
 
 class StreamSettings(BaseModel):
@@ -32,6 +33,7 @@ class StreamSettings(BaseModel):
     show_camera_name: bool = SHOW_CAMERA_NAME
     record_on_stream: bool = RECORD_ON_STREAM
     downscale_oversized: bool = DOWNSCALE_OVERSIZED
+    auto_start_stream: bool = AUTO_START_STREAM
 
     @property
     def buffer_size(self) -> int:

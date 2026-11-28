@@ -36,6 +36,11 @@ async def lifespan(app: FastAPI):
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, StatusEndpointFilter) for f in access_logger.filters):
         access_logger.addFilter(StatusEndpointFilter())
+    if manager.settings.auto_start_stream:
+        logger.info("Auto-start stream enabled: starting camera and stream on startup...")
+        await asyncio.to_thread(manager.start_streaming)
+    else:
+        logger.info("Server started in camera standby mode (camera starts on 'Start Stream').")
     yield
     await webrtc.close_all()
     manager.stop()
@@ -82,9 +87,14 @@ class SettingsUpdateRequest(BaseModel):
     show_camera_name: Optional[bool] = None
     record_on_stream: Optional[bool] = None
     downscale_oversized: Optional[bool] = None
+    auto_start_stream: Optional[bool] = None
 
 
 class TestPatternRequest(BaseModel):
+    enabled: bool
+
+
+class AutostartRequest(BaseModel):
     enabled: bool
 
 
@@ -105,8 +115,13 @@ def favicon():
 async def webrtc_offer(offer: WebRTCOffer):
     """Accept WebRTC offer from browser, return answer."""
     if not manager.is_running or not manager.stream:
-        # Auto-initialize stream off the event loop so camera init doesn't stall WebRTC
-        await asyncio.to_thread(manager.start)
+        if manager.settings.auto_start_stream:
+            await asyncio.to_thread(manager.start_streaming)
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Stream is not active. Click 'Start Stream' to start the camera.",
+            )
     answer = await webrtc.handle_offer(offer.sdp, offer.type, lambda: manager.stream)
     return answer
 
@@ -175,20 +190,20 @@ def restart_server(settings: StreamSettings):
 
 
 @app.post("/stream/start")
-def start_stream():
-    """Start stream playback and recording."""
-    if not manager.is_running:
-        manager.start()
-    manager.start_streaming()
-    return {"message": "Streaming started", "status": manager.get_status()}
+async def start_stream():
+    """Start camera capture, delayed stream playback, and recording."""
+    await asyncio.to_thread(manager.start_streaming)
+    return {"message": "Streaming and camera started", "status": manager.get_status()}
 
 
 @app.post("/stream/stop")
-def stop_stream():
-    if not manager.is_running:
-        raise HTTPException(status_code=400, detail="Server is not running.")
-    manager.stop_streaming()
-    return {"message": "Streaming stopped", "status": manager.get_status()}
+async def stop_stream():
+    """Stop streaming, close active WebRTC viewers, and release camera hardware."""
+    await webrtc.close_all()
+    if not manager.is_running and not (manager.stream and manager.stream.streaming):
+        return {"message": "Stream is already stopped", "status": manager.get_status()}
+    await asyncio.to_thread(manager.stop_streaming)
+    return {"message": "Streaming and camera stopped", "status": manager.get_status()}
 
 
 @app.post("/stream/pause")
@@ -230,6 +245,8 @@ def update_settings(req: SettingsUpdateRequest):
         manager.settings.downscale_oversized = req.downscale_oversized
     if req.record_on_stream is not None:
         manager.set_record_on_stream(req.record_on_stream)
+    if req.auto_start_stream is not None:
+        manager.set_auto_start_stream(req.auto_start_stream)
     if req.width is not None and req.height is not None:
         manager.set_resolution(req.width, req.height)
 
@@ -304,6 +321,25 @@ async def shutdown_mac():
         "action": "shutdown",
         "result": result,
     }
+
+
+@app.get("/system/autostart")
+def get_autostart():
+    """Return whether macOS boot/login auto-start LaunchAgent is enabled."""
+    return diagnostics.get_autostart_status()
+
+
+@app.post("/system/autostart")
+def update_autostart(req: AutostartRequest):
+    """Enable or remove macOS boot/login auto-start LaunchAgent."""
+    try:
+        res = diagnostics.set_autostart_enabled(req.enabled)
+        return {
+            "message": "Auto-start on Mac boot enabled" if res["enabled"] else "Auto-start on Mac boot removed",
+            "autostart": res,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- RECORDINGS GALLERY ---

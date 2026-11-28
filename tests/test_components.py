@@ -852,6 +852,103 @@ class TestVideoDelayServer(unittest.TestCase):
             self.assertIsNone(rec._last_frame)
             self.assertTrue(os.path.exists(path))
 
+    def test_autostart_enable_disable_and_endpoints(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plist_path = os.path.join(tmpdir, "LaunchAgents", "com.test.video_delay_server.plist")
+            flag_path = os.path.join(tmpdir, ".no_autostart")
+
+            with patch("src.diagnostics.get_launch_agent_plist_path", return_value=plist_path), \
+                 patch("src.diagnostics.NO_AUTOSTART_FILE", flag_path):
+                # 1. Initially disabled
+                st0 = diagnostics.get_autostart_status()
+                self.assertFalse(st0["enabled"])
+                self.assertFalse(st0["plist_installed"])
+
+                # 2. Enable via POST /system/autostart creates plist and removes .no_autostart
+                with open(flag_path, "w") as f:
+                    f.write("disabled\n")
+                resp_on = server.update_autostart(server.AutostartRequest(enabled=True))
+                self.assertTrue(resp_on["autostart"]["enabled"])
+                self.assertTrue(os.path.exists(plist_path))
+                self.assertFalse(os.path.exists(flag_path))
+
+                # 3. Disable via POST /system/autostart removes plist and creates .no_autostart
+                resp_off = server.update_autostart(server.AutostartRequest(enabled=False))
+                self.assertFalse(resp_off["autostart"]["enabled"])
+                self.assertFalse(os.path.exists(plist_path))
+                self.assertTrue(os.path.exists(flag_path))
+
+                # 4. GET /system/autostart and StreamManager.get_status reflect disabled state
+                get_st = server.get_autostart()
+                self.assertFalse(get_st["enabled"])
+                mgr = StreamManager()
+                mgr_status = mgr.get_status()
+                self.assertFalse(mgr_status["autostart_enabled"])
+
+        # UI contains autostart switch and /system/autostart endpoint
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(base, "static", "index.html"), "r") as f:
+            index_html = f.read()
+        self.assertIn("chkAutostart", index_html)
+        self.assertIn("/system/autostart", index_html)
+        self.assertIn("chkAutoStartStream", index_html)
+        self.assertIn("videoStandbyOverlay", index_html)
+
+    def test_on_demand_camera_start_and_stop(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pref_file = os.path.join(tmpdir, ".auto_start_stream")
+            with patch("src.manager.AUTO_START_STREAM_FILE", pref_file):
+                mgr = StreamManager()
+                self.assertFalse(mgr.settings.auto_start_stream)
+                self.assertFalse(mgr.is_running)
+
+                fake_stream = MagicMock()
+                fake_stream.streaming = False
+                fake_stream.is_recording = False
+
+                def fake_start(settings=None):
+                    mgr.stream = fake_stream
+                    mgr.is_running = True
+
+                def fake_stop():
+                    mgr.stream = None
+                    mgr.is_running = False
+
+                async def run_lifecycle():
+                    from fastapi import HTTPException
+                    with patch.object(server, "manager", mgr), \
+                         patch("src.webrtc.handle_offer", new=AsyncMock(return_value={"sdp": "ok", "type": "answer"})), \
+                         patch("src.webrtc.close_all", new=AsyncMock()) as mock_close:
+                        # 1. Calling /offer while stopped and auto_start_stream=False does NOT start camera
+                        with self.assertRaises(HTTPException) as ctx:
+                            await server.webrtc_offer(server.WebRTCOffer(sdp="v=0", type="offer"))
+                        self.assertEqual(ctx.exception.status_code, 409)
+                        self.assertFalse(mgr.is_running)
+
+                        # 2. POST /stream/start starts camera and stream
+                        with patch.object(mgr, "start", side_effect=fake_start) as m_start:
+                            res_start = await server.start_stream()
+                            m_start.assert_called_once()
+                            self.assertTrue(mgr.is_running)
+                            self.assertTrue(fake_stream.streaming)
+                            self.assertEqual(res_start["message"], "Streaming and camera started")
+
+                        # 3. POST /stream/stop stops streaming, closes WebRTC, and stops camera
+                        with patch.object(mgr, "stop", side_effect=fake_stop) as m_stop:
+                            res_stop = await server.stop_stream()
+                            mock_close.assert_awaited_once()
+                            m_stop.assert_called_once()
+                            self.assertFalse(mgr.is_running)
+                            self.assertIsNone(mgr.stream)
+                            self.assertEqual(res_stop["message"], "Streaming and camera stopped")
+
+                        # 4. PATCH /settings auto_start_stream=True persists preference
+                        res_patch = server.update_settings(server.SettingsUpdateRequest(auto_start_stream=True))
+                        self.assertTrue(res_patch["status"]["settings"]["auto_start_stream"])
+                        self.assertTrue(os.path.exists(pref_file))
+
+                asyncio.run(run_lifecycle())
+
 
 if __name__ == "__main__":
     unittest.main()

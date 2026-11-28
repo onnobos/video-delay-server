@@ -24,6 +24,8 @@ SHOW_CAMERA_NAME = False
 # Capture & Recording Defaults
 RECORD_ON_STREAM = True
 DOWNSCALE_OVERSIZED = True
+AUTO_START_STREAM = False
+AUTO_START_STREAM_FILE = os.path.join(BASE_DIR, ".auto_start_stream")
 
 # Buffer memory safety
 MAX_DELAY_SECONDS = 120

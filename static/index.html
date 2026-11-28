@@ -222,6 +222,26 @@
             border-radius: 6px;
             font-size: 12px;
             cursor: pointer;
+            z-index: 3;
+        }
+        .video-standby-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: rgba(2, 6, 23, 0.78);
+            color: #cbd5e1;
+            font-size: 14px;
+            font-weight: 600;
+            text-align: center;
+            padding: 16px;
+            z-index: 2;
+        }
+        .video-standby-overlay.hidden {
+            display: none;
         }
 
         /* Form elements */
@@ -371,6 +391,71 @@
             padding-top: 14px;
             border-top: 1px solid var(--card-border);
         }
+        .autostart-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(51, 65, 85, 0.7);
+            border-radius: 10px;
+            padding: 12px 14px;
+            margin-bottom: 12px;
+        }
+        .autostart-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .autostart-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .autostart-sub {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        .switch-toggle {
+            position: relative;
+            display: inline-block;
+            width: 46px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+        .switch-toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .switch-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: #475569;
+            border-radius: 9999px;
+            transition: background 0.2s;
+        }
+        .switch-slider::before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background: #fff;
+            border-radius: 50%;
+            transition: transform 0.2s;
+        }
+        .switch-toggle input:checked + .switch-slider {
+            background: var(--success);
+        }
+        .switch-toggle input:checked + .switch-slider::before {
+            transform: translateX(20px);
+        }
         .modal-backdrop {
             position: fixed;
             inset: 0;
@@ -454,6 +539,10 @@
 
             <div class="video-box">
                 <video id="webrtcVideo" autoplay muted playsinline></video>
+                <div id="videoStandbyOverlay" class="video-standby-overlay">
+                    <span style="font-size: 28px;">📷</span>
+                    <span>Camera Off (Standby) — Press "Start Stream" to turn on camera</span>
+                </div>
                 <button class="video-overlay-btn" id="btnSnap">📸 Snapshot</button>
             </div>
 
@@ -513,6 +602,10 @@
                     <input type="checkbox" id="chkRecordOnStream" checked>
                     <span>Record while streaming</span>
                 </label>
+                <label class="toggle-item">
+                    <input type="checkbox" id="chkAutoStartStream">
+                    <span>Auto-start camera &amp; stream on startup</span>
+                </label>
             </div>
 
             <div style="margin-top: 16px;">
@@ -539,7 +632,20 @@
             </div>
 
             <div class="power-section">
-                <div style="font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 10px;">🔌 Mac Power Control (Headless Host)</div>
+                <div style="font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 10px;">🔌 Mac Power &amp; Startup Control (Headless Host)</div>
+                <div class="autostart-row">
+                    <div class="autostart-meta">
+                        <div class="autostart-title">
+                            <span>🚀 Auto-start Server on Mac Boot</span>
+                            <span id="autostartBadge" class="pill pill-warning">...</span>
+                        </div>
+                        <div id="autostartDetail" class="autostart-sub">Checking LaunchAgent startup configuration...</div>
+                    </div>
+                    <label class="switch-toggle" title="Toggle macOS LaunchAgent auto-startup on boot/login">
+                        <input type="checkbox" id="chkAutostart">
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
                 <div class="btn-row" style="margin-bottom: 0;">
                     <button class="btn btn-warning" id="btnRestartMac">🔁 Restart Mac</button>
                     <button class="btn btn-danger" id="btnShutdownMac">⏻ Shut Down Mac</button>
@@ -582,6 +688,7 @@
         var pendingPowerAction = null;
         var waitingForReboot = false;
         var powerNoticeMessage = '';
+        var autostartUpdating = false;
 
         function showToast(msg, type) {
             var t = document.getElementById('toast');
@@ -627,7 +734,9 @@
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 showToast('Camera switched successfully!', 'success');
-                startWebRTC(true);
+                if (data.status && (data.status.streaming || data.status.process_running)) {
+                    startWebRTC(true);
+                }
             })
             .catch(function(err) {
                 showToast('Failed to switch camera: ' + err, 'error');
@@ -801,19 +910,42 @@
                         document.getElementById('chkFps').checked = !!data.settings.show_fps;
                         document.getElementById('chkCamName').checked = !!data.settings.show_camera_name;
                         document.getElementById('chkRecordOnStream').checked = (data.settings.record_on_stream !== false);
+                        document.getElementById('chkAutoStartStream').checked = !!data.settings.auto_start_stream;
                         overlaysInitialized = true;
                     }
 
                     document.getElementById('btnStart').disabled = data.streaming;
                     document.getElementById('btnPause').disabled = !data.streaming;
-                    document.getElementById('btnStop').disabled = !data.streaming;
+                    document.getElementById('btnStop').disabled = !(data.streaming || data.process_running);
                     document.getElementById('btnPause').textContent = data.paused ? '▶️ Resume' : '⏸️ Pause';
 
-                    // Reconnect WebRTC only if inactive and not already connecting
+                    var standbyOverlay = document.getElementById('videoStandbyOverlay');
+                    if (standbyOverlay) {
+                        standbyOverlay.className = (data.process_running || data.streaming)
+                            ? 'video-standby-overlay hidden'
+                            : 'video-standby-overlay';
+                    }
+
+                    if (typeof data.autostart_enabled === 'boolean' && !autostartUpdating) {
+                        renderAutostartUI(data.autostart_enabled);
+                    }
+
+                    // Connect WebRTC only when stream/camera is running; disconnect when stopped
                     var videoEl = document.getElementById('webrtcVideo');
                     var pcInactive = !pc || pc.connectionState === 'failed' || pc.connectionState === 'closed';
-                    if ((data.process_running || data.streaming) && !videoEl.srcObject && pcInactive && !webrtcConnecting) {
-                        startWebRTC(false);
+                    if (data.process_running || data.streaming) {
+                        if (!videoEl.srcObject && pcInactive && !webrtcConnecting) {
+                            startWebRTC(false);
+                        }
+                    } else {
+                        if (pc) {
+                            try { pc.close(); } catch(e){}
+                            pc = null;
+                        }
+                        if (videoEl.srcObject) {
+                            videoEl.srcObject = null;
+                        }
+                        webrtcConnecting = false;
                     }
                 })
                 .catch(function() {
@@ -852,9 +984,31 @@
         document.getElementById('btnStop').addEventListener('click', function() {
             fetch(API_BASE + '/stream/stop', { method: 'POST' })
                 .then(function() {
-                    showToast('Streaming stopped', 'warning');
+                    if (pc) {
+                        try { pc.close(); } catch(e){}
+                        pc = null;
+                    }
+                    document.getElementById('webrtcVideo').srcObject = null;
+                    showToast('Streaming and camera stopped', 'warning');
                     pollStatus();
                 });
+        });
+
+        document.getElementById('chkAutoStartStream').addEventListener('change', function() {
+            var enabled = this.checked;
+            fetch(API_BASE + '/settings', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ auto_start_stream: enabled })
+            })
+            .then(function(res) { return res.json(); })
+            .then(function() {
+                showToast(enabled ? 'Camera will auto-start on server boot' : 'Camera will stay off until Start Stream is clicked', 'success');
+                pollStatus();
+            })
+            .catch(function(err) {
+                showToast('Error updating auto-start camera setting: ' + err, 'error');
+            });
         });
 
         document.getElementById('btnSnap').addEventListener('click', function() {
@@ -874,7 +1028,8 @@
                 show_timestamp: document.getElementById('chkTimestamp').checked,
                 show_fps: document.getElementById('chkFps').checked,
                 show_camera_name: document.getElementById('chkCamName').checked,
-                record_on_stream: document.getElementById('chkRecordOnStream').checked
+                record_on_stream: document.getElementById('chkRecordOnStream').checked,
+                auto_start_stream: document.getElementById('chkAutoStartStream').checked
             };
 
             fetch(API_BASE + '/settings', {
@@ -1000,7 +1155,59 @@
         });
         document.getElementById('btnRefreshLogs').addEventListener('click', loadServerLogs);
 
-        // --- MAC POWER CONTROL ---
+        // --- MAC AUTO-START & POWER CONTROL ---
+        function renderAutostartUI(enabled, customDetail) {
+            var chk = document.getElementById('chkAutostart');
+            var badge = document.getElementById('autostartBadge');
+            var detail = document.getElementById('autostartDetail');
+            if (!chk || !badge || !detail) return;
+            chk.checked = !!enabled;
+            badge.textContent = enabled ? 'ON' : 'OFF';
+            badge.className = 'pill ' + (enabled ? 'pill-ok' : 'pill-warning');
+            detail.textContent = customDetail || (enabled
+                ? 'LaunchAgent installed — server starts automatically when Mac boots/logs in.'
+                : 'LaunchAgent removed — server will NOT auto-start on Mac boot.');
+        }
+
+        function loadAutostartStatus() {
+            fetch(API_BASE + '/system/autostart')
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    renderAutostartUI(!!data.enabled, data.detail);
+                })
+                .catch(function() {});
+        }
+
+        document.getElementById('chkAutostart').addEventListener('change', function() {
+            var targetState = this.checked;
+            var chk = this;
+            autostartUpdating = true;
+            chk.disabled = true;
+
+            fetch(API_BASE + '/system/autostart', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: targetState })
+            })
+            .then(function(res) {
+                if (!res.ok) throw new Error('Failed to update auto-start setting');
+                return res.json();
+            })
+            .then(function(data) {
+                var a = data.autostart || {};
+                renderAutostartUI(!!a.enabled, a.detail);
+                showToast(data.message || (a.enabled ? 'Auto-start enabled' : 'Auto-start removed'), 'success');
+            })
+            .catch(function(err) {
+                chk.checked = !targetState;
+                showToast('Auto-start update error: ' + err.message, 'error');
+            })
+            .finally(function() {
+                chk.disabled = false;
+                autostartUpdating = false;
+            });
+        });
+
         function openPowerModal(action) {
             pendingPowerAction = action;
             var title = document.getElementById('powerModalTitle');
@@ -1064,9 +1271,9 @@
 
         // Initialize
         loadCameras();
+        loadAutostartStatus();
         pollStatus();
         setInterval(pollStatus, 2000);
-        startWebRTC(false);
     </script>
 </body>
 </html>

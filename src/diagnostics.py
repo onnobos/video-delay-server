@@ -2,19 +2,23 @@ import datetime
 import json
 import os
 import platform
+import plistlib
+import pwd
 import subprocess
+import sys
 import threading
 from collections import deque
 from typing import Any, Dict, List, Optional
 
 from src import cameras, network, webrtc
-from src.config import LOGS_DIR, RECORDINGS_DIR
+from src.config import BASE_DIR, LOGS_DIR, RECORDINGS_DIR
 from src.logger import get_logger
 
 logger = get_logger(__name__)
 
 CAPTURE_USB_KEYWORDS = ("elgato", "hd60", "cam link", "capture", "uvc")
 SUDOERS_POWER_FILE = "/etc/sudoers.d/video_delay_server"
+NO_AUTOSTART_FILE = os.path.join(BASE_DIR, ".no_autostart")
 
 
 def check_tcc_permission() -> Dict[str, Any]:
@@ -382,6 +386,95 @@ def trigger_host_power_action(action: str, manager: Any, delay_sec: float = 1.5)
     return {"status": "scheduled", "action": action, "delay_seconds": delay_sec}
 
 
+def get_launch_agent_plist_path() -> str:
+    """Resolve the macOS LaunchAgent plist path for the current user."""
+    user = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    label = f"com.{user}.video_delay_server"
+    return os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+
+
+def build_launch_agent_plist_bytes(port: int = 8000, host: str = "0.0.0.0") -> bytes:
+    """Build macOS LaunchAgent plist payload matching server.sh."""
+    user = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    label = f"com.{user}.video_delay_server"
+    venv_python = os.path.join(BASE_DIR, "myenv", "bin", "python")
+    py_bin = venv_python if os.path.exists(venv_python) else sys.executable
+    venv_bin_dir = os.path.dirname(py_bin)
+
+    plist_obj = {
+        "Label": label,
+        "WorkingDirectory": BASE_DIR,
+        "ProgramArguments": [
+            py_bin,
+            "main.py",
+            "--api",
+            "--host",
+            str(host),
+            "--port",
+            str(port),
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Interactive",
+        "LowPriorityIO": False,
+        "StandardOutPath": os.path.join(LOGS_DIR, "videoserver.log"),
+        "StandardErrorPath": os.path.join(LOGS_DIR, "videoserver_error.log"),
+        "EnvironmentVariables": {
+            "PYTHONPATH": BASE_DIR,
+            "PYTHONUNBUFFERED": "1",
+            "OPENCV_AVFOUNDATION_SKIP_AUTH": "1",
+            "PATH": f"{venv_bin_dir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+    }
+    return plistlib.dumps(plist_obj)
+
+
+def get_autostart_status() -> Dict[str, Any]:
+    """Check whether macOS boot/login auto-start LaunchAgent is enabled."""
+    plist_path = get_launch_agent_plist_path()
+    plist_installed = os.path.exists(plist_path)
+    run_at_load = False
+    if plist_installed:
+        try:
+            with open(plist_path, "rb") as f:
+                data = plistlib.load(f)
+            run_at_load = bool(data.get("RunAtLoad", False))
+        except Exception:
+            run_at_load = False
+
+    enabled = plist_installed and run_at_load and not os.path.exists(NO_AUTOSTART_FILE)
+    return {
+        "enabled": enabled,
+        "plist_path": plist_path,
+        "plist_installed": plist_installed,
+        "detail": (
+            "Enabled — server starts automatically when Mac boots/logs in."
+            if enabled
+            else "Disabled — LaunchAgent removed; server will not auto-start on Mac boot."
+        ),
+    }
+
+
+def set_autostart_enabled(enabled: bool, port: int = 8000, host: str = "0.0.0.0") -> Dict[str, Any]:
+    """Enable or remove macOS LaunchAgent auto-start without killing the active server."""
+    plist_path = get_launch_agent_plist_path()
+    if enabled:
+        if os.path.exists(NO_AUTOSTART_FILE):
+            os.remove(NO_AUTOSTART_FILE)
+        os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+        with open(plist_path, "wb") as f:
+            f.write(build_launch_agent_plist_bytes(port=port, host=host))
+        logger.info(f"Auto-start on Mac boot enabled ({plist_path}).")
+    else:
+        if os.path.exists(plist_path):
+            os.remove(plist_path)
+        with open(NO_AUTOSTART_FILE, "w", encoding="utf-8") as f:
+            f.write("disabled\n")
+        logger.info(f"Auto-start on Mac boot removed ({plist_path} deleted).")
+
+    return get_autostart_status()
+
+
 def run_full_diagnostics(manager: Any) -> Dict[str, Any]:
     """Execute all headless diagnostic checks and summarize remediation steps."""
     checks = [
@@ -410,6 +503,7 @@ def run_full_diagnostics(manager: Any) -> Dict[str, Any]:
         "checks": checks,
         "recommendations": recommendations,
         "telemetry": status_snapshot.get("telemetry", {}),
+        "autostart": get_autostart_status(),
     }
 
 

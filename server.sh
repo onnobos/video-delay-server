@@ -13,6 +13,7 @@ HOST="0.0.0.0"
 PLIST_LABEL="com.$USER.$APP_NAME"
 PLIST_FILE="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 SUDOERS_FILE="/etc/sudoers.d/video_delay_server"
+NO_AUTOSTART_FILE="$PROJECT_DIR/.no_autostart"
 
 # Colors
 C_RESET='\033[0m'
@@ -147,26 +148,7 @@ check_port() {
 # ------------------------------------------------------------------------------
 # 2. Service Management Functions
 # ------------------------------------------------------------------------------
-cmd_start() {
-    echo -e "${C_BOLD}==============================================================${C_RESET}"
-    echo -e "${C_BOLD}   🎬 Starting Video Delay Server (Background Service)        ${C_RESET}"
-    echo -e "${C_BOLD}==============================================================${C_RESET}"
-    
-    ensure_environment
-    check_port
-
-    # Unload existing agent if running
-    if launchctl list | grep -q "$PLIST_LABEL"; then
-        info "Unloading existing LaunchAgent..."
-        launchctl unload "$PLIST_FILE" 2>/dev/null || true
-    fi
-
-    # Hardware detection
-    echo ""
-    info "Scanning video capture hardware..."
-    "$VENV_DIR/bin/python" main.py --list-cameras || true
-
-    # Create LaunchAgent plist
+write_launchagent_plist() {
     info "Configuring macOS LaunchAgent service at $PLIST_FILE..."
     mkdir -p "$HOME/Library/LaunchAgents"
 
@@ -223,9 +205,38 @@ cmd_start() {
 </dict>
 </plist>
 EOF
+}
 
-    info "Loading LaunchAgent service..."
-    launchctl load "$PLIST_FILE"
+cmd_start() {
+    echo -e "${C_BOLD}==============================================================${C_RESET}"
+    echo -e "${C_BOLD}   🎬 Starting Video Delay Server (Background Service)        ${C_RESET}"
+    echo -e "${C_BOLD}==============================================================${C_RESET}"
+    
+    ensure_environment
+    check_port
+
+    # Unload existing agent if running
+    if launchctl list | grep -q "$PLIST_LABEL"; then
+        info "Unloading existing LaunchAgent..."
+        launchctl unload "$PLIST_FILE" 2>/dev/null || true
+    fi
+
+    # Hardware detection
+    echo ""
+    info "Scanning video capture hardware..."
+    "$VENV_DIR/bin/python" main.py --list-cameras || true
+
+    if [ -f "$NO_AUTOSTART_FILE" ]; then
+        warn "Auto-start on boot is disabled (.no_autostart active). Starting as standalone background process..."
+        PYTHONPATH="$PROJECT_DIR" PYTHONUNBUFFERED=1 OPENCV_AVFOUNDATION_SKIP_AUTH=1 \
+            nohup "$VENV_DIR/bin/python" main.py --api --host "$HOST" --port "$PORT" \
+            >> "$PROJECT_DIR/logs/videoserver.log" \
+            2>> "$PROJECT_DIR/logs/videoserver_error.log" < /dev/null &
+    else
+        write_launchagent_plist
+        info "Loading LaunchAgent service..."
+        launchctl load "$PLIST_FILE"
+    fi
 
     # Verification polling (wait up to 5 seconds)
     local waited=0
@@ -376,6 +387,33 @@ EOF
     fi
 }
 
+cmd_autostart() {
+    local sub="${1:-status}"
+    case "$sub" in
+        on|enable)
+            rm -f "$NO_AUTOSTART_FILE"
+            write_launchagent_plist
+            ok "Auto-start on Mac boot ENABLED ($PLIST_FILE)."
+            ;;
+        off|disable|remove)
+            rm -f "$PLIST_FILE"
+            touch "$NO_AUTOSTART_FILE"
+            ok "Auto-start on Mac boot REMOVED ($PLIST_FILE deleted; server will not start on reboot)."
+            ;;
+        status)
+            if [ -f "$PLIST_FILE" ] && [ ! -f "$NO_AUTOSTART_FILE" ]; then
+                ok "Auto-start on Mac boot: ENABLED ($PLIST_FILE)"
+            else
+                warn "Auto-start on Mac boot: DISABLED (LaunchAgent removed)"
+            fi
+            ;;
+        *)
+            err "Usage: ./server.sh autostart [on|off|status]"
+            exit 1
+            ;;
+    esac
+}
+
 cmd_uninstall() {
     echo -e "${C_BOLD}==============================================================${C_RESET}"
     echo -e "${C_BOLD}   🗑️  Uninstalling Video Delay Server Service                ${C_RESET}"
@@ -437,6 +475,9 @@ case "${1:-}" in
     setup-power)
         cmd_setup_power
         ;;
+    autostart)
+        cmd_autostart "${2:-status}"
+        ;;
     uninstall|remove)
         cmd_uninstall
         ;;
@@ -445,7 +486,7 @@ case "${1:-}" in
         echo "Usage: ./server.sh <command>"
         echo ""
         echo "Commands:"
-        echo "  start       Setup environment, start background LaunchAgent service, and show QR code"
+        echo "  start       Setup environment, start background server, and show QR code"
         echo "  run         Run server in foreground with live terminal output and QR code"
         echo "  stop        Stop running service and free port $PORT"
         echo "  restart     Restart the background service"
@@ -453,6 +494,7 @@ case "${1:-}" in
         echo "  doctor      Run headless hardware, permission, USB speed, and log diagnostics"
         echo "  bench       Benchmark raw camera FPS, USB speed, and full pipeline FPS"
         echo "  setup-power Enable passwordless Mac Restart/Shutdown from the web control panel"
+        echo "  autostart   Manage Mac boot auto-start: ./server.sh autostart [on|off|status]"
         echo "  logs        Stream live server logs (tail -f)"
         echo "  uninstall   Remove LaunchAgent service with optional data cleanup"
         echo ""

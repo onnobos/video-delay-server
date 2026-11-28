@@ -1,11 +1,31 @@
+import os
 import threading
 from typing import Optional, Dict, Any
+from src.config import AUTO_START_STREAM, AUTO_START_STREAM_FILE
 from src.stream import VideoDelayStream
 from src.settings import StreamSettings
 from src.logger import get_logger
 from src import webrtc, cameras
 
 logger = get_logger(__name__)
+
+
+def load_persisted_auto_start_stream() -> bool:
+    """Read persisted auto_start_stream preference from disk (default False)."""
+    if not os.path.exists(AUTO_START_STREAM_FILE):
+        return bool(AUTO_START_STREAM)
+    try:
+        with open(AUTO_START_STREAM_FILE, "r", encoding="utf-8") as f:
+            val = f.read().strip().lower()
+        return val in ("1", "true", "yes", "on")
+    except OSError:
+        return bool(AUTO_START_STREAM)
+
+
+def save_persisted_auto_start_stream(enabled: bool) -> None:
+    """Persist auto_start_stream preference to disk."""
+    with open(AUTO_START_STREAM_FILE, "w", encoding="utf-8") as f:
+        f.write("1\n" if enabled else "0\n")
 
 
 class StreamManager:
@@ -15,7 +35,7 @@ class StreamManager:
     """
     def __init__(self):
         self.stream: Optional[VideoDelayStream] = None
-        self.settings: StreamSettings = StreamSettings()
+        self.settings: StreamSettings = StreamSettings(auto_start_stream=load_persisted_auto_start_stream())
         self.is_running = False
         self._lock = threading.RLock()
 
@@ -112,6 +132,14 @@ class StreamManager:
                 elif not enabled and self.stream.is_recording:
                     self.stream.stop_recording()
 
+    def set_auto_start_stream(self, enabled: bool):
+        """Enable or disable automatic camera + stream launch on server startup."""
+        with self._lock:
+            enabled = bool(enabled)
+            self.settings.auto_start_stream = enabled
+            save_persisted_auto_start_stream(enabled)
+            logger.info(f"Manager: auto_start_stream set to {enabled}")
+
     def start_streaming(self):
         with self._lock:
             if not self.is_running or not self.stream:
@@ -125,11 +153,13 @@ class StreamManager:
 
     def stop_streaming(self):
         with self._lock:
-            if self.stream and self.stream.streaming:
+            if self.stream:
                 self.stream.streaming = False
                 if self.stream.is_recording:
                     self.stream.stop_recording()
-                logger.info("Manager: Streaming stopped.")
+            if self.is_running:
+                self.stop()
+            logger.info("Manager: Streaming and camera capture stopped.")
 
     def toggle_pause(self) -> bool:
         with self._lock:
@@ -172,11 +202,14 @@ class StreamManager:
 
     def get_status(self) -> Dict[str, Any]:
         """Aggregate comprehensive system, stream, and memory telemetry."""
+        from src import diagnostics
+
         status: Dict[str, Any] = {
             "process_running": self.is_running,
             "streaming": False,
             "paused": False,
             "recording": False,
+            "autostart_enabled": diagnostics.get_autostart_status()["enabled"],
             "active_viewers": webrtc.get_active_viewers_count(),
             "settings": self.settings.model_dump(),
             "telemetry": {
