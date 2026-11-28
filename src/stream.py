@@ -59,6 +59,17 @@ class VideoRecorder(threading.Thread):
         next_tick = time.monotonic()
 
         while self.running:
+            if self.queue.qsize() > 2:
+                # Drain queued backlog immediately to prevent RAM buildup after disk stalls
+                try:
+                    frame = self.queue.get_nowait()
+                    self._last_frame = frame
+                    self._write_frame(frame)
+                except queue.Empty:
+                    pass
+                next_tick = time.monotonic() + frame_interval
+                continue
+
             now = time.monotonic()
             if now < next_tick:
                 time.sleep(max(0.001, next_tick - now))
@@ -86,6 +97,7 @@ class VideoRecorder(threading.Thread):
 
         if self.writer:
             self.writer.release()
+        self._last_frame = None
 
         if self.frames_written == 0:
             if os.path.exists(self.filename):
@@ -189,7 +201,7 @@ class VideoDelayStream:
         # Recording state
         self.rec_lock = threading.Lock()
         self.is_recording = False
-        self.rec_queue: queue.Queue = queue.Queue(maxsize=300)
+        self.rec_queue: queue.Queue = queue.Queue(maxsize=90)
         self.recorder_thread: Optional[VideoRecorder] = None
         self.current_recording_name: Optional[str] = None
         self.thumbnail_saved = False
@@ -978,6 +990,10 @@ class VideoDelayStream:
             if self.cap and self.cap.isOpened():
                 self.cap.release()
             self.cap = None
+
+        if hasattr(self, "_listeners_lock") and hasattr(self, "_frame_listeners"):
+            with self._listeners_lock:
+                self._frame_listeners.clear()
 
         if not self.headless:
             try:

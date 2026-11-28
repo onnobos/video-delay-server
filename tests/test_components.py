@@ -774,6 +774,84 @@ class TestVideoDelayServer(unittest.TestCase):
         self.assertEqual(res_hw["status"], "warning")
         self.assertIn("USB 3.0", res_hw["remediation"])
 
+    def test_webrtc_peer_cleanup_unbinds_listener_and_fast_h264(self):
+        from aiortc.codecs import h264 as aiortc_h264
+
+        even_frame = np.full((240, 320, 3), 64, dtype=np.uint8)
+        s = VideoDelayStream.__new__(VideoDelayStream)
+        s.settings = StreamSettings(delay_seconds=1, fps=30, width=320, height=240)
+        s.running = True
+        s.paused = False
+        s.actual_fps = 30.0
+        s.frame_lock = threading.Lock()
+        s.delayed_frame = even_frame
+        s.frame_seq = 1
+        s._listeners_lock = threading.Lock()
+        s._frame_listeners = []
+
+        async def run_cleanup_test():
+            await webrtc.close_all()
+            fake_pc = MagicMock()
+            fake_pc.connectionState = "connected"
+            fake_pc.localDescription = MagicMock(sdp="v=0", type="answer")
+            fake_pc.getTransceivers.return_value = []
+            fake_pc.setRemoteDescription = AsyncMock()
+            fake_pc.createAnswer = AsyncMock(return_value=MagicMock())
+            fake_pc.setLocalDescription = AsyncMock()
+            fake_pc.close = AsyncMock()
+            handlers = {}
+            fake_pc.on = lambda ev: (lambda fn: handlers.setdefault(ev, fn))
+
+            with patch("src.webrtc.RTCPeerConnection", return_value=fake_pc):
+                await webrtc.handle_offer("v=0", "offer", lambda: s, connect_timeout=5.0)
+
+            track = fake_pc.addTrack.call_args[0][0]
+            await track.recv()
+            self.assertEqual(len(s._frame_listeners), 1)
+            self.assertIsNotNone(webrtc._yuv_cache)
+
+            # Closing peer must stop track, unbind listener, and clear cached frame/YUV
+            fake_pc.connectionState = "closed"
+            await handlers["connectionstatechange"]()
+            self.assertEqual(len(s._frame_listeners), 0)
+            self.assertIsNone(track._last_frame_bgr)
+            self.assertIsNone(webrtc._yuv_cache)
+
+        asyncio.run(run_cleanup_test())
+
+        # Fast H.264 encoder patch uses ultrafast preset and bounded thread_count=2
+        enc = aiortc_h264.H264Encoder()
+        yuv = np.full((720 * 3 // 2, 1280), 128, dtype=np.uint8)
+        vf = av.VideoFrame.from_ndarray(yuv, format="yuv420p")
+        vf.pts = 0
+        vf.time_base = webrtc.VIDEO_TIME_BASE
+        gen = enc._encode_frame(vf, False)
+        self.assertEqual(enc.codec.options.get("preset"), "ultrafast")
+        self.assertEqual(enc.codec.thread_count, 2)
+        list(gen)
+        vf.pts = 3000
+        pkgs, _ = enc.encode(vf)
+        self.assertGreater(len(pkgs), 0)
+
+    def test_video_recorder_drains_backlog_fast(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "backlog.mp4")
+            q = queue.Queue(maxsize=90)
+            frame = np.full((180, 320, 3), 110, dtype=np.uint8)
+            for _ in range(25):
+                q.put(frame)
+
+            rec = VideoRecorder(path, 320, 180, 15.0, queue=q)
+            rec.start()
+            # At normal 15 FPS pacing, 25 frames would take ~1.67s; backlog drain writes them in <0.45s
+            time.sleep(0.45)
+            rec.stop()
+            rec.join(timeout=3.0)
+
+            self.assertGreaterEqual(rec.frames_written, 25)
+            self.assertIsNone(rec._last_frame)
+            self.assertTrue(os.path.exists(path))
+
 
 if __name__ == "__main__":
     unittest.main()

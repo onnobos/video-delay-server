@@ -3,10 +3,12 @@ from collections import deque
 import fractions
 import threading
 import time
+import av
 import cv2
 from typing import Any, Callable, Optional, Tuple, Union
 
 from aiortc import RTCPeerConnection, RTCRtpSender, RTCSessionDescription, VideoStreamTrack
+from aiortc.codecs import h264 as aiortc_h264
 from aiortc.mediastreams import MediaStreamError
 from av import VideoFrame
 
@@ -17,13 +19,59 @@ logger = get_logger(__name__)
 VIDEO_CLOCK_RATE = 90000
 VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 
-# Track all active peer connections & shared YUV420P conversion cache
+# Track all active peer connections, their tracks, & shared YUV420P conversion cache
 pcs: set[RTCPeerConnection] = set()
+_pc_tracks: dict[RTCPeerConnection, "VideoDelayTrack"] = {}
 _yuv_lock = threading.Lock()
 _yuv_cache: Optional[Tuple[Tuple[int, int], Any]] = None
 _fps_lock = threading.Lock()
 _last_fps_key: Optional[Tuple[int, int]] = None
 _webrtc_timestamps: deque = deque(maxlen=60)
+_h264_patched = False
+
+
+def _configure_fast_h264_encoder(preset: str = "ultrafast", thread_count: int = 2) -> None:
+    """Configure aiortc's libx264 encoder for low CPU and bounded thread count per viewer."""
+    global _h264_patched
+    if _h264_patched:
+        return
+    _h264_patched = True
+
+    orig_encode_frame = aiortc_h264.H264Encoder._encode_frame
+
+    def _fast_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
+        if self.codec and (
+            frame.width != self.codec.width
+            or frame.height != self.codec.height
+            or abs(self.target_bitrate - self.codec.bit_rate) / max(1, self.codec.bit_rate) > 0.1
+        ):
+            self.buffer_data = b""
+            self.buffer_pts = None
+            self.codec = None
+
+        if self.codec is None:
+            codec = av.CodecContext.create("libx264", "w")
+            codec.width = frame.width
+            codec.height = frame.height
+            codec.bit_rate = self.target_bitrate
+            codec.pix_fmt = "yuv420p"
+            codec.framerate = fractions.Fraction(aiortc_h264.MAX_FRAME_RATE, 1)
+            codec.time_base = fractions.Fraction(1, aiortc_h264.MAX_FRAME_RATE)
+            codec.thread_count = thread_count
+            codec.options = {
+                "level": "31",
+                "tune": "zerolatency",
+                "preset": preset,
+            }
+            codec.profile = "Baseline"
+            self.codec = codec
+
+        return orig_encode_frame(self, frame, force_keyframe)
+
+    aiortc_h264.H264Encoder._encode_frame = _fast_encode_frame
+
+
+_configure_fast_h264_encoder()
 
 
 def _get_or_convert_yuv420p(frame_bgr: Any, cache_key: Optional[Tuple[int, int]] = None) -> Any:
@@ -156,6 +204,8 @@ class VideoDelayTrack(VideoStreamTrack):
 
     def stop(self):
         self._unbind_listener()
+        self._last_frame_bgr = None
+        self._frame_ready = None
         super().stop()
 
     async def recv(self) -> VideoFrame:
@@ -244,18 +294,30 @@ async def handle_offer(
     offer = RTCSessionDescription(sdp=sdp, type=sdp_type)
     pc = RTCPeerConnection()
     pcs.add(pc)
+    video_track = VideoDelayTrack(stream_or_provider)
+    _pc_tracks[pc] = video_track
 
     logger.info(f"WebRTC: New offer received. Active peers: {len(pcs)}")
 
     bg_tasks: set[asyncio.Task] = set()
 
     async def _cleanup_pc(reason: str):
+        global _yuv_cache
+        track = _pc_tracks.pop(pc, None)
+        if track is not None:
+            try:
+                track.stop()
+            except Exception:
+                pass
         if pc in pcs:
             pcs.discard(pc)
             try:
                 await pc.close()
             except Exception:
                 pass
+            if not pcs:
+                with _yuv_lock:
+                    _yuv_cache = None
             logger.info(f"WebRTC peer closed ({reason}). Remaining peers: {len(pcs)}")
         for task in list(bg_tasks):
             if not task.done() and task is not asyncio.current_task():
@@ -296,7 +358,6 @@ async def handle_offer(
     bg_tasks.add(watchdog)
     watchdog.add_done_callback(bg_tasks.discard)
 
-    video_track = VideoDelayTrack(stream_or_provider)
     pc.addTrack(video_track)
 
     # Prefer H.264 over VP8 for faster encoding and Apple hardware decoding
@@ -329,6 +390,12 @@ async def close_all():
     """Close all open peer connections cleanly and reset YUV/FPS state."""
     global _yuv_cache, _last_fps_key
     logger.info(f"Closing {len(pcs)} WebRTC peer connections...")
+    for track in list(_pc_tracks.values()):
+        try:
+            track.stop()
+        except Exception:
+            pass
+    _pc_tracks.clear()
     coros = [pc.close() for pc in list(pcs)]
     await asyncio.gather(*coros, return_exceptions=True)
     pcs.clear()
